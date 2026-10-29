@@ -461,7 +461,7 @@ def sync_main_editor_changes():
     except:
         pass
 
-st.title("🎯 Quarterly Planner")
+st.title("📅 Quarterly Planner")
 
 # Load credentials and status
 jira_status = st.session_state.get("jira_connection_status")
@@ -1139,7 +1139,7 @@ def show_timeline_gantt_tab():
                         'Gantt_Status': 'Cluster Header',
                         'Y_Axis_Label': cluster_id,
                         'Display_Label': cluster_y_label,
-                        'Is_Cluster_Header': True,
+                        'Is_Cluster_header': True,
                         'Y_Index': epic_counter,
                         'Size': 'N/A'
                     })

@@ -20,6 +20,7 @@ from utils.release_plan_helpers import (
     select_target_page,
     validate_version,
 )
+from utils.release_readiness_page import bind_release_version_input
 
 load_dotenv(override=True)
 
@@ -30,7 +31,7 @@ JIRA_EMAIL = os.getenv("JIRA_EMAIL", "")
 CONF_SERVER = os.getenv("CONFLUENCE_SERVER", "")
 CONF_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "")
 
-st.title("🚀 Release Plan Post-actions")
+st.title("📋 Post Actions")
 st.caption(
     "Extracts `POST-ACTION: <text>` lines from the Jira descriptions and comments of a release and "
     "adds them, unchecked, to the Post-actions section of a Release Plan page. Existing content is never overwritten."
@@ -52,7 +53,7 @@ def _get_page(page_id):
     return get_confluence_page(CONF_SERVER, CONF_TOKEN, JIRA_AUTH_METHOD, JIRA_EMAIL, page_id)
 
 
-version_in = st.text_input("Release version (X.Y.Z)", value="", placeholder="e.g. 35.0.0", key="rp_version")
+version_in = bind_release_version_input("rp", label="Release version (X.Y.Z)")
 st.text_input("fixVersion prefix", value=fix_version_display(version_in, cfg.label), disabled=True)
 st.caption("Once you finish typing, click outside the field (or press Enter) to update the fixVersion.")
 

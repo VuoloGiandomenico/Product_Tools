@@ -242,19 +242,41 @@ if "jira_connection_status" not in st.session_state:
     check_quality_integrations(quality_integration_args(), skip_unconfigured=True)
 
 # 1. Define the page objects first so they are globally accessible
-planner_page = st.Page("tools/1_Quarterly_Planner.py", title="Quarterly Planner", icon="🎯")
+planner_page = st.Page("tools/1_Quarterly_Planner.py", title="Quarterly Planner", icon="📅")
 sprint_review_page = st.Page("tools/2_Sprint_Review.py", title="Sprint Review", icon="📋")
 release_notes_page = st.Page("tools/3_Release_Notes.py", title="Release Notes", icon="📣")
 sprint_kpis_page = st.Page("tools/4_Sprint_KPIs.py", title="Sprint KPIs", icon="📊")
 ai_creator_page = st.Page("tools/5_AI_Issue_Creator.py", title="AI Issue Creator", icon="🤖")
 ai_agent_page = st.Page("tools/6_AI_Agent.py", title="AI Agent", icon="💬")
 from utils.navigation import RELEASE_PLAN_PAGES
+_release_plan_icon_map = {
+    0: "🔎",
+    7: "📋",
+    8: "📨",
+}
+_release_plan_titles = {
+    0: "Overview",
+    7: "Post Actions",
+    8: "Notifications",
+}
 _rp_pages = {
-    n: (st.Page(path, title=title, url_path=url) if url else st.Page(path, title=title))
+    n: (
+        st.Page(
+            path,
+            title=_release_plan_titles.get(n, title.replace(f"{n} · ", "")),
+            url_path=url,
+            icon=_release_plan_icon_map.get(n, "📄"),
+        ) if url else st.Page(
+            path,
+            title=_release_plan_titles.get(n, title.replace(f"{n} · ", "")),
+            icon=_release_plan_icon_map.get(n, "📄"),
+        )
+    )
     for n, path, title, url in RELEASE_PLAN_PAGES
+    if n in (0, 7, 8)
 }
 rr_overview_page = _rp_pages[0]
-release_plan_nav_pages = [_rp_pages[n] for n in sorted(_rp_pages)]
+release_plan_nav_pages = [_rp_pages[n] for n in (0, 7, 8)]
 
 # 2. Define the Home Page rendering function
 def show_home():
@@ -282,15 +304,24 @@ def show_home():
                 background-color: #18181D !important;
                 border-right: 1px solid #3E3E4A !important;
             }
-            section[data-testid="stSidebar"] h1,
-            section[data-testid="stSidebar"] h2,
-            section[data-testid="stSidebar"] h3,
-            section[data-testid="stSidebar"] h4,
-            section[data-testid="stSidebar"] label,
-            section[data-testid="stSidebar"] .stMarkdown {
-                color: #FFFFFF !important;
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] {
+                gap: 0.2rem !important;
             }
-            
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] > div,
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] > a,
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] > button,
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] [data-testid="stSidebarNavMenu"] {
+                margin: 0 !important;
+                padding-left: 0.1rem !important;
+            }
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] [data-testid="stSidebarNavMenu"] {
+                margin-left: 0.35rem !important;
+            }
+            section[data-testid="stSidebar"] [data-testid="stSidebarNavItems"] .stSidebarNavSectionHeader {
+                padding-left: 0.15rem !important;
+                margin-bottom: 0.1rem !important;
+            }
+
             /* Sidebar Toggle Button */
             button[data-testid="collapsedControl"], button[kind="header"] {
                 color: #60A5FA !important;
@@ -770,7 +801,7 @@ def show_home():
                     if api_resp.status_code == 200:
                         st.session_state.api_connection_status = "Success"
                         st.session_state.api_connection_msg = "Connected"
-                        st.success("✅ **Local API Connection Successful!**")
+                        st.success("�� **Local API Connection Successful!**")
                     else:
                         st.session_state.api_connection_status = "Failed"
                         st.session_state.api_connection_msg = f"HTTP {api_resp.status_code}"
@@ -796,7 +827,7 @@ home_page = st.Page(show_home, title="Home Hub", icon="🏠", default=True)
 # 4. Setup and run navigation
 pg = st.navigation({
     "": [home_page, planner_page, sprint_review_page, release_notes_page, sprint_kpis_page, ai_creator_page, ai_agent_page],
-    "Release Plan": release_plan_nav_pages,
+    "🎯 Release Plan": release_plan_nav_pages,
 })
 st.set_page_config(page_title="Product Owner Suite Hub", layout="wide")
 
@@ -848,7 +879,7 @@ if st.session_state.tunnel_enabled:
         tunnel_url = start_tunnel(8501)
         
     if tunnel_url:
-        st.sidebar.success("Tunnel Active ✅")
+        st.sidebar.success("Tunnel Active ���")
         st.sidebar.code(tunnel_url, language="text")
         st.sidebar.link_button("🌐 Open Link", tunnel_url, use_container_width=True)
         st.sidebar.caption("Share this URL with team members to collaborate in real-time.")

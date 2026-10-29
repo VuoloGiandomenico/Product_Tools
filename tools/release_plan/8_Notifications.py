@@ -4,7 +4,7 @@ from utils import release_checks as rc
 from utils import release_readiness_page as rr
 
 P = "rr8"
-rr.page_header("Release Plan · 8 Notifications",
+rr.page_header("📨 Notifications",
                "Copy-ready texts to paste into Jira comments or chat. Nothing is posted from here. Runs only on Refresh.")
 ctx = rr.load_context(P)
 rr.refresh_all(ctx)

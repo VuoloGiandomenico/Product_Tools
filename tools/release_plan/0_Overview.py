@@ -1,7 +1,7 @@
 from utils import release_readiness_page as rr
 
 P = "rr0"
-rr.page_header("Release Plan · 0 Overview",
+rr.page_header("🔎 Overview",
                "Runs all release readiness rules. Fetches only when you click Refresh (read-only).")
 ctx = rr.load_context(P)
 rr.refresh_all(ctx)

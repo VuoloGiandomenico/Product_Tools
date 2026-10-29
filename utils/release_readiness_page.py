@@ -53,8 +53,7 @@ def load_context(prefix: str) -> Context:
     except ValueError as e:
         st.error(str(e))
         st.stop()
-    version = st.text_input("Release version (X.Y.Z)", value="", placeholder="e.g. 35.0.0",
-                            key=f"{prefix}_version").strip()
+    version = bind_release_version_input(prefix, label="Release version (X.Y.Z)")
     ctx = Context(
         prefix=prefix,
         server=os.getenv("JIRA_SERVER", ""), token=os.getenv("JIRA_API_TOKEN", ""),
@@ -258,3 +257,21 @@ def render_overview(data: dict, freeze) -> None:
             continue
         with st.expander(f"{rule} ({len(items)})", expanded=False):
             render_findings(items)
+
+
+RELEASE_PLAN_SHARED_VERSION_KEY = "release_plan_version"
+
+
+def bind_release_version_input(prefix: str, label: str = "Release version (X.Y.Z)") -> str:
+    """Keep Release Plan version in sync across all sidebar subpages."""
+    shared = st.session_state.get(RELEASE_PLAN_SHARED_VERSION_KEY, "")
+    current = st.session_state.get(f"{prefix}_version", shared)
+    value = current if current else shared
+    version = st.text_input(label, value=value, placeholder="e.g. 35.0.0",
+                            key=f"{prefix}_version").strip()
+    if version:
+        st.session_state[RELEASE_PLAN_SHARED_VERSION_KEY] = version
+    elif shared:
+        st.session_state[f"{prefix}_version"] = shared
+        return shared
+    return version
