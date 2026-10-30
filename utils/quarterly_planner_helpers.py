@@ -1,4 +1,5 @@
 import pandas as pd
+from utils.df_helpers import blank_if_missing
 import re
 import os
 import io
@@ -103,7 +104,7 @@ def prepare_quarterly_progress_for_presentation(df):
     configured_labels = [label.strip() for label in os.getenv("TEAM_LABELS", "").split(",") if label.strip()]
     priorities = {label.lower(): position for position, label in enumerate(configured_labels)}
     prepared["_team_order"] = prepared["Team"].str.lower().map(priorities).fillna(len(priorities))
-    status_values = prepared.get("Status", pd.Series("", index=prepared.index)).fillna("").astype(str).str.strip().str.lower()
+    status_values = blank_if_missing(prepared.get("Status", pd.Series("", index=prepared.index))).astype(str).str.strip().str.lower()
     # Quarterly progress maps a closed Epic to Done.  Keep accepted variants for
     # existing imported data, then place these Epics after all open work.
     prepared["_is_closed_epic"] = status_values.isin({"done", "closed", "resolved"}).astype(int)
@@ -131,8 +132,8 @@ def build_delivery_roadmap_timeline(df):
     """Turn selected delivery commitments into an easy-to-read milestone timeline."""
     roadmap = df[df["Include in delivery roadmap"].fillna(False).astype(bool)].copy()
     roadmap = roadmap[
-        roadmap["Delivery month"].fillna("").astype(str).str.strip().ne("")
-        & roadmap["Delivery month"].fillna("").astype(str).str.strip().ne("-")
+        blank_if_missing(roadmap["Delivery month"]).astype(str).str.strip().ne("")
+        & blank_if_missing(roadmap["Delivery month"]).astype(str).str.strip().ne("-")
     ]
     if roadmap.empty:
         return roadmap, None
@@ -151,8 +152,8 @@ def build_delivery_roadmap_timeline(df):
         return roadmap, None
 
     roadmap["Epic"] = roadmap["Summary"].fillna("Unnamed Epic").astype(str)
-    roadmap["Release"] = roadmap["Release version"].fillna("").replace("", "Release TBD")
-    roadmap["Update"] = roadmap["Presentation update"].fillna("").replace("", "No additional context provided")
+    roadmap["Release"] = blank_if_missing(roadmap["Release version"]).replace("", "Release TBD")
+    roadmap["Update"] = blank_if_missing(roadmap["Presentation update"]).replace("", "No additional context provided")
     fig = px.scatter(
         roadmap,
         x="Milestone date",

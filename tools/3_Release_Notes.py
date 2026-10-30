@@ -125,8 +125,8 @@ def sync_editor_changes(df_key, editor_key, display_df_indices):
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
         indices_to_drop = [display_df_indices[i] for i in deleted_indices if i < len(display_df_indices)]
-        df.drop(index=indices_to_drop, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=indices_to_drop)
+        df = df.reset_index(drop=True)
         has_real_edits = True
         
     # Added rows
@@ -166,8 +166,8 @@ def sync_custom_table_changes(table_idx, editor_key, display_df_indices):
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
         indices_to_drop = [display_df_indices[i] for i in deleted_indices if i < len(display_df_indices)]
-        df.drop(index=indices_to_drop, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=indices_to_drop)
+        df = df.reset_index(drop=True)
         has_real_edits = True
         
     # Added rows
@@ -982,7 +982,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                 if epic_col_detected:
                     norm_cols[epic_col_detected] = 'Epic'
                 if norm_cols:
-                    csv_df.rename(columns=norm_cols, inplace=True)
+                    csv_df = csv_df.rename(columns=norm_cols)
                 for req in ['Key', 'Summary', 'Epic', 'Status', 'Fix Version']:
                     if req not in csv_df.columns:
                         csv_df[req] = "N/A"

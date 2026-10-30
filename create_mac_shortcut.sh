@@ -1,20 +1,20 @@
 #!/bin/bash
-# Navegar de forma segura al directorio donde reside este script
+# Resolve the folder that contains this script
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_DIR="$HOME/Desktop"
 
 echo "============================================="
-echo "🖥️  Creando acceso directo en el Escritorio..."
+echo "🖥️  Creating Desktop shortcut..."
 echo "============================================="
 
-# 1. Compilar la aplicación nativa en el Escritorio con la ruta absoluta de esta laptop
+# 1. Build a native launcher app on the Desktop pointing to this project's absolute path
 osacompile -o "$DESKTOP_DIR/PO_Tools.app" -e "do shell script \"$PROJECT_DIR/run.sh > /dev/null 2>&1 &\""
 
-# 2. Copiar el icono personalizado si existe
+# 2. Apply the custom icon if available
 if [ -f "$PROJECT_DIR/assets/app_icon.icns" ]; then
-    echo "🎨 Aplicando el icono de analítica..."
+    echo "🎨 Applying app icon..."
     cp "$PROJECT_DIR/assets/app_icon.icns" "$DESKTOP_DIR/PO_Tools.app/Contents/Resources/applet.icns"
     touch "$DESKTOP_DIR/PO_Tools.app"
 fi
 
-echo "✅ ¡Listo! La app PO_Tools ya está en tu Escritorio y configurada para esta laptop."
+echo "✅ Done! PO_Tools is now on your Desktop and configured for this machine."

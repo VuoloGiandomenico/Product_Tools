@@ -1,34 +1,34 @@
 #!/bin/bash
-# Navegar a la carpeta del proyecto de manera segura
+# Always run from the project folder
 cd "$(dirname "$0")"
 
 echo "=========================================================="
-echo "🎯 Iniciando Planificador Trimestral de Épicas con Sprints"
+echo "🎯 Starting Product Owner Suite Hub"
 echo "=========================================================="
 
-# 1. Crear entorno virtual si no existe
+# 1. Create the virtual environment if it does not exist
 if [ ! -d ".venv" ]; then
-    echo "📦 Creando entorno virtual aislado (.venv)..."
+    echo "📦 Creating isolated virtual environment (.venv)..."
     python3 -m venv .venv
 fi
 
-# 2. Activar entorno virtual
-echo "🔋 Activando entorno virtual..."
+# 2. Activate the virtual environment
+echo "🔋 Activating virtual environment..."
 source .venv/bin/activate
 
-# 3. Actualizar pip e instalar dependencias
-echo "📥 Verificando e instalar dependencias desde requirements.txt..."
+# 3. Upgrade pip and install the pinned dependencies
+echo "📥 Installing dependencies from requirements.txt..."
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-# 4. Iniciar la API en segundo plano
-echo "⚙️ Lanzando API (FastAPI) en puerto 8000..."
-uvicorn api:app --host 0.0.0.0 --port 8000 &
+# 4. Start the API in the background (local only)
+echo "⚙️ Starting API (FastAPI) on http://127.0.0.1:8000..."
+uvicorn api:app --host 127.0.0.1 --port 8000 &
 API_PID=$!
 
-# 5. Iniciar la aplicación de Streamlit
-echo "🚀 Lanzando servidor de Streamlit..."
+# 5. Start the Streamlit app
+echo "🚀 Starting Streamlit server..."
 streamlit run app.py
 
-# Al cerrar Streamlit, matar también la API
+# Stop the API when Streamlit exits
 kill $API_PID

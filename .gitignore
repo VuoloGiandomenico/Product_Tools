@@ -33,3 +33,11 @@ data/
 .gemini/
 
 .codeagentswarm/
+
+# Merge leftovers and local tooling output
+.merge_tmp/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/

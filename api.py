@@ -3,7 +3,10 @@ truststore.inject_into_ssl()  # verify TLS with the OS trust store (corporate pr
 from fastapi import FastAPI, Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+import hmac
+import logging
 import os
+import uuid
 from typing import Optional
 from dotenv import load_dotenv
 import re
@@ -31,6 +34,22 @@ from utils.jira_helpers import create_jira_issue
 
 load_dotenv(override=True)
 
+logger = logging.getLogger("po_tools.api")
+
+
+def _internal_error(err) -> HTTPException:
+    """Log the real error server-side and return a generic 500 with a reference id."""
+    ref = uuid.uuid4().hex[:8]
+    if isinstance(err, BaseException):
+        logger.error("API error ref=%s", ref, exc_info=err)
+    else:
+        logger.error("API error ref=%s: %s", ref, err)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Internal error (ref {ref}). Check the server logs for details.",
+    )
+
+
 app = FastAPI(
     title="PO Tools API",
     description="API for Agentic interaction with PO Tools",
@@ -46,7 +65,7 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="API_KEY not configured on the server environment.",
         )
-    if api_key != expected_api_key:
+    if not hmac.compare_digest(api_key.encode("utf-8"), expected_api_key.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
@@ -71,7 +90,7 @@ async def generate_issue(req: GenerateIssueRequest, api_key: str = Depends(get_a
         base_url=ollama_url
     )
     if result.startswith("Error") or result.startswith("Exception"):
-        raise HTTPException(status_code=500, detail=result)
+        raise _internal_error(result)
     
     return GenerateIssueResponse(generated_description=result)
 
@@ -121,7 +140,7 @@ async def create_jira_issue_endpoint(req: CreateJiraIssueRequest, api_key: str =
     )
 
     if result.startswith("Error") or result.startswith("Exception"):
-        raise HTTPException(status_code=500, detail=result)
+        raise _internal_error(result)
 
     issue_link = f"{jira_server.rstrip('/')}/browse/{result}"
     return CreateJiraIssueResponse(issue_key=result, issue_link=issue_link)
@@ -158,7 +177,7 @@ async def calculate_kpis(req: CalculateKPIsRequest, api_key: str = Depends(get_a
     )
     
     if res.get("error"):
-        raise HTTPException(status_code=500, detail=res["error"])
+        raise _internal_error(res["error"])
         
     import numpy as np
     df_records = []
@@ -209,7 +228,7 @@ async def publish_kpis(req: PublishKPIsRequest, api_key: str = Depends(get_api_k
         )
         return {"success": True, "page_url": page_url}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 from utils.release_helpers import prepare_release_notes_from_version_url, publish_release_note_to_history, build_prepared_release_notes_pdf
 import base64
@@ -254,7 +273,7 @@ async def prepare_release_notes(req: PrepareReleaseNotesRequest, api_key: str = 
             
         return prepared
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 class PublishReleaseNotesRequest(BaseModel):
     version: str
@@ -280,7 +299,7 @@ async def publish_release_notes(req: PublishReleaseNotesRequest, api_key: str = 
         page_url = publish_release_note_to_history(prepared_stub, pdf_bytes, req.filename, config)
         return {"success": True, "page_url": page_url}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 from typing import Dict, Any
 
@@ -314,7 +333,7 @@ async def generate_release_notes_pdf(req: GenerateReleaseNotesPdfRequest, api_ke
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         return {"success": True, "pdf_base64": pdf_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 from utils.sprint_review_helpers import build_sprint_review_pdf
 from utils.release_helpers import upload_pdf_to_confluence
@@ -354,7 +373,7 @@ async def generate_sprint_review_pdf(req: GenerateSprintReviewPdfRequest, api_ke
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         return {"success": True, "pdf_base64": pdf_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 class PublishSprintReviewRequest(BaseModel):
     pdf_base64: str
@@ -386,7 +405,7 @@ async def publish_sprint_review(req: PublishSprintReviewRequest, api_key: str = 
         )
         return {"success": True, "page_url": page_url}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 from utils.quarterly_planner_helpers import (
     build_delivery_roadmap_slide_pdf,
@@ -409,7 +428,7 @@ async def generate_roadmap_pdf(req: GenerateRoadmapPdfRequest, api_key: str = De
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         return {"success": True, "pdf_base64": pdf_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 class GenerateProgressPdfRequest(BaseModel):
     progress_df: list
@@ -424,7 +443,7 @@ async def generate_progress_pdf(req: GenerateProgressPdfRequest, api_key: str = 
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         return {"success": True, "pdf_base64": pdf_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 class GenerateProgressPptxRequest(BaseModel):
     progress_df: list
@@ -444,7 +463,7 @@ async def generate_progress_pptx(req: GenerateProgressPptxRequest, api_key: str 
         pptx_base64 = base64.b64encode(pptx_bytes).decode('utf-8')
         return {"success": True, "pptx_base64": pptx_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 class GeneratePlanPdfRequest(BaseModel):
     plan_df: list
@@ -458,7 +477,7 @@ async def generate_plan_pdf(req: GeneratePlanPdfRequest, api_key: str = Depends(
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         return {"success": True, "pdf_base64": pdf_base64}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _internal_error(e) from e
 
 from utils.jira_helpers import search_jira_issues
 from utils.confluence_helpers import search_confluence_pages
@@ -493,7 +512,7 @@ async def search_jira_api(req: SearchJiraRequest, api_key: str = Depends(get_api
             res = res_fallback
 
     if "error" in res:
-        raise HTTPException(status_code=500, detail=res["error"])
+        raise _internal_error(res["error"])
     return res
 
 class SearchConfluenceRequest(BaseModel):
@@ -519,6 +538,6 @@ async def search_confluence_api(req: SearchConfluenceRequest, api_key: str = Dep
 
     res = search_confluence_pages(conf_server, conf_token, auth_method, email, cql)
     if "error" in res:
-        raise HTTPException(status_code=500, detail=res["error"])
+        raise _internal_error(res["error"])
     return res
 

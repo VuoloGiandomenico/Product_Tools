@@ -1,17 +1,19 @@
-streamlit
-pandas
-plotly
-python-dotenv
-requests
-truststore
-Pillow
-reportlab
-pycloudflared
-streamlit-autorefresh
-vl-convert-python
-python-pptx
-pypdf
-fastapi
-uvicorn
-pydantic
-ollama
+# Runtime dependencies, pinned to the versions validated by the test suite.
+# Upgrade deliberately: bump a version, run `pytest`, then commit.
+streamlit==1.66.1
+pandas==3.1.0
+plotly==7.1.0
+python-dotenv==1.2.4
+requests==2.34.2
+truststore==0.10.5
+Pillow==13.0.0
+reportlab==5.1.0
+pycloudflared==0.3.0
+streamlit-autorefresh==1.0.1
+vl-convert-python==1.9.0.post1
+python-pptx==1.0.2
+pypdf==6.21.4
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic==2.14.2
+ollama==0.6.3

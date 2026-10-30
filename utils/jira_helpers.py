@@ -1,7 +1,9 @@
-import os
 import requests
 import re
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 def map_jira_status(status_name):
     if not status_name or not isinstance(status_name, str):
@@ -173,12 +175,10 @@ def fetch_jira_tickets_dataset(server, token, query_val, is_sprint=True, auth_ty
             response = requests.get(url, headers=headers, params=params, timeout=15)
 
         print(f"[DEBUG] fetch_jira_tickets_dataset: response status_code={response.status_code}")
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"fetch_jira_tickets_dataset: response status_code={response.status_code}\n")
+        logger.debug(f"fetch_jira_tickets_dataset: response status_code={response.status_code}")
         if response.status_code != 200:
             err_msg = f"Jira API connection failed ({response.status_code}): {response.text}"
-            with open("data/debug_click.txt", "a") as f:
-                f.write(f"fetch_jira_tickets_dataset ERROR: {err_msg}\n")
+            logger.warning(f"fetch_jira_tickets_dataset ERROR: {err_msg}")
             print(f"[JIRA Helpers] {err_msg}")
             try:
                 import streamlit as st
@@ -200,8 +200,7 @@ def fetch_jira_tickets_dataset(server, token, query_val, is_sprint=True, auth_ty
             return None
             
         issues = data.get("issues", [])
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"fetch_jira_tickets_dataset: issues length = {len(issues) if issues else 0}\n")
+        logger.debug(f"fetch_jira_tickets_dataset: issues length = {len(issues) if issues else 0}")
         if not issues:
             return pd.DataFrame()
             
@@ -373,8 +372,7 @@ def fetch_epic_completion(server, token, epic_keys, epic_link_field, auth_type="
                 }
 
     except Exception as e:
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"fetch_epic_completion EXCEPTION: {e}\n")
+        logger.exception(f"fetch_epic_completion EXCEPTION: {e}")
 
     return (completion_by_epic, issue_status_counts_by_epic) if return_issue_counts else completion_by_epic
 
@@ -397,8 +395,7 @@ def build_quarterly_epic_progress_table(server, token, committed_label, quarter_
     
     try:
         # Query matching epics
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"build_quarterly_epic_progress_table JQL: {jql}\n")
+        logger.debug(f"build_quarterly_epic_progress_table JQL: {jql}")
         res_df = fetch_jira_tickets_dataset(
             server,
             token,
@@ -410,8 +407,7 @@ def build_quarterly_epic_progress_table(server, token, committed_label, quarter_
         )
         
         if res_df is None:
-            with open("data/debug_click.txt", "a") as f:
-                f.write("build_quarterly_epic_progress_table: fetch_jira_tickets_dataset returned None\n")
+            logger.debug("build_quarterly_epic_progress_table: fetch_jira_tickets_dataset returned None")
             return None
     
         cols_to_keep = ["Key", "Summary", "Completion", "Closed / Resolved", "To Do", "In progress", "Epic", "Status", "Fix Version", "Assignee", "Labels"]
@@ -453,13 +449,10 @@ def build_quarterly_epic_progress_table(server, token, committed_label, quarter_
             "sort_by_team": True,
             "table_type": "quarterly_epic_progress"
         }
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"build_quarterly_epic_progress_table success: table title={title}, records count={len(extra_df)}\n")
+        logger.debug(f"build_quarterly_epic_progress_table success: table title={title}, records count={len(extra_df)}")
         return result_table
     except Exception as e:
-        import traceback
-        with open("data/debug_click.txt", "a") as f:
-            f.write(f"build_quarterly_epic_progress_table EXCEPTION: {e}\n{traceback.format_exc()}\n")
+        logger.exception(f"build_quarterly_epic_progress_table EXCEPTION: {e}")
         return None
 
 def get_jira_auth_headers(token, auth_type, email):

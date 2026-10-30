@@ -131,7 +131,7 @@ def sort_items_by_label_priority(df, secondary_columns):
 
     df_copy = df.copy()
     df_copy["_label_sort_order"] = df_copy["Labels"].apply(get_label_priority)
-    df_copy.sort_values(by=["_label_sort_order"] + secondary_columns, inplace=True, kind="stable")
+    df_copy = df_copy.sort_values(by=["_label_sort_order"] + secondary_columns, kind="stable")
     return df_copy.drop(columns=["_label_sort_order"])
 
 def get_team_label(labels):

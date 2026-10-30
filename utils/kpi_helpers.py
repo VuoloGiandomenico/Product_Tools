@@ -20,6 +20,10 @@ ITEMS_ADDED_KPI = "Added"
 ITEMS_DELIVERED_KPI = "Delivered"
 ITEM_KPIS = [ITEMS_COMMITTED_KPI, ITEMS_ADDED_KPI, ITEMS_DELIVERED_KPI]
 
+# Standard KPI names available for Sprint Review selection.
+# Keep this lazy so the module can import before the helper function is defined.
+SPRINT_REVIEW_KPI_OPTIONS = []
+
 # Headers an upstream version used for the same counts; only kept so existing Confluence tables still parse.
 LEGACY_SCOPE_KPIS = ["Issues at Sprint Start", "Issues Added During Sprint", "Issues Completed in Sprint"]
 
@@ -32,6 +36,121 @@ BASE_KPI_HEADERS = [
     "Open Bugs (Sev A+B)", "Critical Bugs (Sev A)", "Resolved Bugs", "Avg Cycle Time (Days)",
 ]
 BASE_METRIC_KEYS = ["dates", "total_sp", "achieved_sp", "sprint_pct", "releases", "open_bugs", "crit_bugs", "resolved_bugs", "cycle_time"]
+
+
+def configured_quality_kpis():
+    return ((list(SONAR_KPIS.values()) if sonar_configured() else [])
+            + ([SBOM_KPI] if sbom_configured() else [])
+            + ([VANGUARD_KPI] if vanguard_configured() else []))
+
+
+def sprint_review_kpi_catalog():
+    """Return the ordered list of Sprint Review KPI names available to the user."""
+    catalog = list(ITEM_KPIS) + [
+        "Committed SP (at Start)",
+        "Delivered SP (Total)",
+        "Delivery %",
+        "Releases",
+        "Open Bugs (Sev A+B)",
+        "Critical Bugs (Sev A)",
+        "Resolved Bugs",
+        "Avg Cycle Time (Days)",
+    ]
+    catalog.extend(configured_quality_kpis())
+    seen = set()
+    ordered = []
+    for name in catalog:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
+# Finalize the public catalog after helper functions are defined so UI code can consume a static list.
+SPRINT_REVIEW_KPI_OPTIONS = sprint_review_kpi_catalog()
+
+
+def default_sprint_review_kpis():
+    """Default selection for the Sprint Review KPI block, configurable via env var."""
+    raw = (os.getenv("DEFAULT_INCLUDED_SPRINT_KPIS") or os.getenv("DEFAULT_INCLUDE_SPRINT_KPIS") or "").strip()
+    catalog = sprint_review_kpi_catalog()
+    if raw:
+        parsed = []
+        for name in [part.strip() for part in raw.split(',') if part.strip()]:
+            if name in catalog:
+                parsed.append(name)
+        if parsed:
+            return parsed
+    default = [
+        "Committed",
+        "Delivered",
+        "Open Bugs (Sev A+B)",
+        "Critical Bugs (Sev A)",
+        "Avg Cycle Time (Days)",
+    ]
+    return [name for name in default if name in catalog]
+
+
+
+def normalize_jira_issue_types(selected_types):
+    """Normalize user-facing issue-type labels to the Jira issue names used in JQL."""
+    if not selected_types:
+        return []
+    mapping = {
+        "User Story": ["Story", "User Story"],
+        "Task": ["Task"],
+        "Technical Task": ["Task", "Technical Task"],
+        "Technical Sub-task": ["Technical Sub-task", "Sub-task", "Technical Subtask", "Tech Sub-task"],
+        "Sub-task": ["Sub-task"],
+        "Improvement": ["Improvement"],
+        "Bug": ["Bug"],
+        "Epic": ["Epic"],
+    }
+    normalized = []
+    for value in selected_types:
+        if value is None:
+            continue
+        raw = str(value).strip()
+        if not raw:
+            continue
+        for item in mapping.get(raw, [raw]):
+            if item and item not in normalized:
+                normalized.append(item)
+    return normalized
+def sprint_kpi_summary_df(selected_kpis=None, metrics=None):
+    """Build a two-column KPI summary dataframe for the Sprint Review workbook/export."""
+    selected = list(selected_kpis or [])
+    if not selected:
+        return pd.DataFrame(columns=["KPI", "Value"])
+    metrics = metrics or {}
+    item_map = metrics.get("items", {}) or {}
+    quality_map = metrics.get("quality", {}) or {}
+    rows = []
+    for name in selected:
+        value = ""
+        if name in ITEM_KPIS:
+            value = item_map.get(name, "")
+        elif name == "Committed SP (at Start)":
+            value = metrics.get("total_sp", "")
+        elif name == "Delivered SP (Total)":
+            value = metrics.get("achieved_sp", "")
+        elif name == "Delivery %":
+            value = metrics.get("sprint_pct", "")
+        elif name == "Releases":
+            value = metrics.get("releases", "")
+        elif name == "Open Bugs (Sev A+B)":
+            value = metrics.get("open_bugs", "")
+        elif name == "Critical Bugs (Sev A)":
+            value = metrics.get("crit_bugs", "")
+        elif name == "Resolved Bugs":
+            value = metrics.get("resolved_bugs", "")
+        elif name == "Avg Cycle Time (Days)":
+            value = metrics.get("cycle_time", "")
+        elif name in quality_map:
+            value = quality_map.get(name, "")
+        rows.append({"KPI": name, "Value": value})
+    return pd.DataFrame(rows, columns=["KPI", "Value"])
 
 
 def compute_sprint_metrics(res):
@@ -98,11 +217,6 @@ def remove_sprint_rows(body, sprint_names):
     table = re.sub(r"<tr\b.*?</tr>", keep, table, flags=re.DOTALL)
     return body[:start] + table + body[end:]
 
-def configured_quality_kpis():
-    return ((list(SONAR_KPIS.values()) if sonar_configured() else [])
-            + ([SBOM_KPI] if sbom_configured() else [])
-            + ([VANGUARD_KPI] if vanguard_configured() else []))
-
 
 def get_auth_headers(server, token, auth_type, email):
     headers = {
@@ -166,6 +280,7 @@ def calculate_business_days(start_dt, end_dt):
     return round(total, 2)
 
 def get_story_points_field_id(server, headers, auth):
+    """Return the Jira field id used for the Sprint field, with a safe fallback."""
     url = f"{server.rstrip('/')}/rest/api/2/field"
     try:
         resp = requests.get(url, headers=headers, auth=auth, timeout=10) if auth else requests.get(url, headers=headers, timeout=10)
@@ -178,8 +293,24 @@ def get_story_points_field_id(server, headers, auth):
         pass
     return os.getenv("JIRA_STORY_POINTS_FIELD", "customfield_10016")
 
+def get_sprint_field_id(server, headers, auth):
+    """Return the Jira field id used for the Sprint field, with a safe fallback."""
+    url = f"{server.rstrip('/')}/rest/api/2/field"
+    try:
+        resp = requests.get(url, headers=headers, auth=auth, timeout=10) if auth else requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            for f in resp.json():
+                name_lower = f.get("name", "").lower().strip()
+                if name_lower in ["sprint", "sprints"]:
+                    return f.get("id")
+    except Exception:
+        pass
+    return os.getenv("JIRA_SPRINT_FIELD", "customfield_10020")
+
+
 def fetch_exact_sprint_report(server, headers, auth, sprint_id, selected_types=None):
     """Returns (committed SP, achieved SP, added keys, scope counts, error). Tries twice: the sprint report endpoint can fail transiently."""
+    normalized_types = normalize_jira_issue_types(selected_types)
     def get_json(url):
         resp = requests.get(url, headers=headers, auth=auth, timeout=30) if auth else requests.get(url, headers=headers, timeout=30)
         if resp.status_code != 200:
@@ -206,10 +337,10 @@ def fetch_exact_sprint_report(server, headers, auth, sprint_id, selected_types=N
 
             # Issue counts as Jira's sprint report and burndown show them (they include issues removed during the
             # sprint and exclude sub-tasks), limited to the selected issue types. The report only has type ids.
-            type_names = {str(t.get("id")): t.get("name") for t in get_json(f"{server.rstrip('/')}/rest/api/2/issuetype")} if selected_types else {}
+            type_names = {str(t.get("id")): t.get("name") for t in get_json(f"{server.rstrip('/')}/rest/api/2/issuetype")} if normalized_types else {}
             def keys_in(list_names):
                 return {issue["key"] for name in list_names for issue in contents.get(name, [])
-                        if not selected_types or type_names.get(str(issue.get("typeId"))) in selected_types}
+                        if not normalized_types or type_names.get(str(issue.get("typeId"))) in normalized_types}
             report_keys = keys_in(("completedIssues", "issuesNotCompletedInCurrentSprint", "puntedIssues", "issuesCompletedInAnotherSprint"))
             issues_added = len(report_keys & set(added_keys))
             scope_counts = dict(zip(ITEM_KPIS, (len(report_keys) - issues_added, issues_added, len(keys_in(("completedIssues",))))))
@@ -219,22 +350,12 @@ def fetch_exact_sprint_report(server, headers, auth, sprint_id, selected_types=N
             error = str(e)
     return None, None, [], None, error
 
-def get_sprint_field_id(server, headers, auth):
-    url = f"{server.rstrip('/')}/rest/api/2/field"
-    try:
-        resp = requests.get(url, headers=headers, auth=auth, timeout=10) if auth else requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            for f in resp.json():
-                if f.get("name", "").lower().strip() == "sprint":
-                    return f.get("id")
-    except Exception:
-        pass
-    return "customfield_10020"
 
 def fetch_sprint_kpi_data(server, token, auth_type, email, sprint_query, selected_types):
     if not server or not token or not sprint_query:
         return {"error": "Server, Token, or Sprint query is missing."}
 
+    normalized_types = normalize_jira_issue_types(selected_types)
     headers, auth = get_auth_headers(server, token, auth_type, email)
     
     if sprint_query.isdigit():
@@ -242,8 +363,8 @@ def fetch_sprint_kpi_data(server, token, auth_type, email, sprint_query, selecte
     else:
         jql = f"sprint = '{sprint_query}'"
         
-    if selected_types:
-        types_str = ", ".join([f"'{t}'" for t in selected_types])
+    if normalized_types:
+        types_str = ", ".join([f"'{t}'" for t in normalized_types])
         jql += f" AND issuetype in ({types_str})"
         
     sp_field = get_story_points_field_id(server, headers, auth)
@@ -646,18 +767,18 @@ def build_items_chart(df_plot):
     order_map = {ITEMS_COMMITTED_KPI: 1, ITEMS_ADDED_KPI: 2, ITEMS_DELIVERED_KPI: 1}
     df_melted["StackOrder"] = df_melted["Metric"].map(order_map)
 
-    # Pre-calcular las posiciones verticales (Y) para centrar los textos correctamente en las barras apiladas
+    # Pre-compute vertical (Y) positions to centre the labels on the stacked bars
     df_melted = df_melted.sort_values(by=["Sprint Display", "Group", "StackOrder"])
     df_melted["y_top"] = df_melted.groupby(["Sprint Display", "Group"])["Items"].cumsum()
     df_melted["y_mid"] = df_melted["y_top"] - (df_melted["Items"] / 2)
 
-    # Configuración base compartida
+    # Shared base configuration
     base = alt.Chart(df_melted).encode(
         x=alt.X("Sprint Display:N", title=None, axis=alt.Axis(labelAngle=0), sort=None),
         xOffset=alt.XOffset("Group:N", sort=["Scope (Committed + Added)", "Delivered"])
     )
 
-    # 1. Capa de las Barras
+    # 1. Bar layer
     bars = base.mark_bar().encode(
         y=alt.Y("Items:Q", title="Items"),
         color=alt.Color(
@@ -665,7 +786,7 @@ def build_items_chart(df_plot):
             legend=alt.Legend(orient="top", title=None, symbolType="circle"),
             scale=alt.Scale(
                 domain=[ITEMS_COMMITTED_KPI, ITEMS_ADDED_KPI, ITEMS_DELIVERED_KPI],
-                range=["#42a5f5", "#ff7043", "#66bb6a"] # Azul claro, Naranja claro, Verde
+                range=["#42a5f5", "#ff7043", "#66bb6a"] # light blue, light orange, green
             )
         ),
         order=alt.Order("StackOrder:O", sort="ascending"),
@@ -677,7 +798,7 @@ def build_items_chart(df_plot):
         ]
     )
     
-    # 2. Capa de Texto para Scope (Committed y Added): Centrado en su sección de la barra
+    # 2. Text layer for Scope (Committed and Added): centred on its bar segment
     text_scope = base.transform_filter(
         (alt.datum.Metric != ITEMS_DELIVERED_KPI) & (alt.datum.Items > 0)
     ).mark_text(
@@ -688,12 +809,12 @@ def build_items_chart(df_plot):
         text=alt.Text("Items:Q", format=".0f"),
         color=alt.condition(
             alt.datum.Metric == ITEMS_COMMITTED_KPI,
-            alt.value("#0d47a1"), # Azul más oscuro
-            alt.value("#bf360c")  # Naranja más oscuro
+            alt.value("#0d47a1"), # darker blue
+            alt.value("#bf360c")  # darker orange
         )
     )
 
-    # 3. Capa de Texto para el TOTAL de Scope: Flotando encima de la barra apilada en color blanco
+    # 3. Text layer for the Scope TOTAL: floating above the stacked bar, in white
     text_scope_total = base.transform_filter(
         alt.datum.Group == "Scope (Committed + Added)"
     ).transform_aggregate(
@@ -711,20 +832,20 @@ def build_items_chart(df_plot):
         text=alt.Text("total_items:Q", format=".0f")
     )
     
-    # 4. Capa de Texto para Delivered: Flotando encima de la barra
+    # 4. Text layer for Delivered: floating above the bar
     text_delivered = base.transform_filter(
         (alt.datum.Metric == ITEMS_DELIVERED_KPI) & (alt.datum.Items > 0)
     ).mark_text(
         align='center', 
         baseline='bottom', 
         dy=-5,
-        color='#66bb6a' # Mismo color verde que la barra
+        color='#66bb6a' # same green as the bar
     ).encode(
         y=alt.Y("y_top:Q"),
         text=alt.Text("Items:Q", format=".0f")
     )
     
-    # Combinar todas las capas (añadimos text_scope_total)
+    # Combine all layers (including text_scope_total)
     return bars + text_scope + text_scope_total + text_delivered
 
 

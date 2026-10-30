@@ -9,6 +9,8 @@ from utils.ai_helpers import get_ollama_models
 from utils.sonar_helpers import check_sonar_connection
 from utils.sbom_helpers import check_sbom_connection
 from utils.vanguard_helpers import check_vanguard_connection
+from utils.access import is_remote_request, check_access_password
+from utils.connection_checks import check_jira_connection, check_confluence_connection
 
 # Load environment variables
 load_dotenv(override=True)
@@ -17,7 +19,45 @@ if 'primary_color' not in st.session_state or st.session_state.get('prev_env_col
     st.session_state.primary_color = default_primary_color
     st.session_state.prev_env_color = default_primary_color
 
+
+def _request_headers():
+    """Headers of the current browser request ({} when unavailable)."""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            return dict(st.context.headers or {})
+        from streamlit.web.server.websocket_headers import _get_websocket_headers
+        return dict(_get_websocket_headers() or {})
+    except Exception:
+        return {}
+
+
+# Requests arriving through the Cloudflare tunnel (or any proxy) are "remote":
+# they must authenticate and can never read or change the host credentials.
+LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://localhost:8000").rstrip("/")
+request_headers = _request_headers()
+IS_REMOTE = is_remote_request(request_headers)
+
+
+def _secret_input(label, state_key, widget_key):
+    """Password input that never sends the stored secret to the browser.
+
+    Leaving the field empty keeps the stored value; typing a new value replaces it.
+    Returns the effective secret.
+    """
+    stored = st.session_state.get(state_key, "") or ""
+    entered = st.text_input(
+        label,
+        value="",
+        type="password",
+        key=widget_key,
+        placeholder="•••••••• stored (leave blank to keep)" if stored else "",
+    )
+    return entered if entered else stored
+
+
 def save_credentials_to_env():
+    if IS_REMOTE:
+        raise PermissionError("Credentials can only be changed from the host machine.")
     env_path = ".env"
     lines = []
     if os.path.exists(env_path):
@@ -154,60 +194,19 @@ if "jira_connection_status" not in st.session_state:
     st.session_state.api_connection_status = "Not checked"
     st.session_state.api_connection_msg = ""
 
-    # Test Jira Connection
-    srv = st.session_state.jira_server
-    tok = st.session_state.jira_token
+    # Test Jira and Confluence connections (shared helpers in utils/connection_checks.py)
     auth_method = st.session_state.jira_auth_method
     email = st.session_state.jira_email
-    if srv and tok:
-        try:
-            headers = {"Accept": "application/json"}
-            auth = None
-            token_clean = tok.strip().removeprefix("Bearer ").strip()
-            if auth_method in ["Corporate Login (Username + Password)", "Jira Cloud/Server Basic (Email/User + Token)"]:
-                auth = (email.strip(), token_clean)
-            else:
-                headers["Authorization"] = f"Bearer {token_clean}"
-            
-            resp = requests.get(f"{srv.rstrip('/')}/rest/api/2/myself", headers=headers, auth=auth, timeout=5)
-            if resp.status_code == 200:
-                user_name = resp.json().get("displayName", "User")
-                st.session_state.jira_connection_status = "Success"
-                st.session_state.jira_connection_msg = f"Connected as `{user_name}`"
-            else:
-                st.session_state.jira_connection_status = "Failed"
-                st.session_state.jira_connection_msg = f"Auth Failed (HTTP {resp.status_code})"
-        except Exception as e:
-            st.session_state.jira_connection_status = "Failed"
-            st.session_state.jira_connection_msg = f"Connection Failed ({e})"
-
-    # Test Confluence Connection
-    csrv = st.session_state.conf_server
-    ctok = st.session_state.conf_token
-    if csrv and ctok:
-        try:
-            headers = {"Accept": "application/json"}
-            auth = None
-            token_clean = ctok.strip().removeprefix("Bearer ").strip()
-            if auth_method in ["Corporate Login (Username + Password)", "Jira Cloud/Server Basic (Email/User + Token)"]:
-                auth = (email.strip(), token_clean)
-            else:
-                headers["Authorization"] = f"Bearer {token_clean}"
-                
-            base_url = csrv.rstrip("/")
-            if "atlassian.net" in base_url and not base_url.endswith("/wiki"):
-                base_url = base_url + "/wiki"
-                
-            resp = requests.get(f"{base_url}/rest/api/content?limit=1", headers=headers, auth=auth, timeout=5)
-            if resp.status_code == 200:
-                st.session_state.conf_connection_status = "Success"
-                st.session_state.conf_connection_msg = "Connected successfully"
-            else:
-                st.session_state.conf_connection_status = "Failed"
-                st.session_state.conf_connection_msg = f"Auth Failed (HTTP {resp.status_code})"
-        except Exception as e:
-            st.session_state.conf_connection_status = "Failed"
-            st.session_state.conf_connection_msg = f"Connection Failed ({e})"
+    if st.session_state.jira_server and st.session_state.jira_token:
+        ok, msg = check_jira_connection(st.session_state.jira_server, st.session_state.jira_token,
+                                        auth_method, email, timeout=5)
+        st.session_state.jira_connection_status = "Success" if ok else "Failed"
+        st.session_state.jira_connection_msg = msg
+    if st.session_state.conf_server and st.session_state.conf_token:
+        ok, msg = check_confluence_connection(st.session_state.conf_server, st.session_state.conf_token,
+                                              auth_method, email, timeout=5)
+        st.session_state.conf_connection_status = "Success" if ok else "Failed"
+        st.session_state.conf_connection_msg = msg
 
     # Test Ollama Connection
     ourl = st.session_state.ollama_url
@@ -227,14 +226,14 @@ if "jira_connection_status" not in st.session_state:
 
     # Test API Connection
     try:
-        api_resp = requests.get("http://localhost:8000/openapi.json", timeout=2)
+        api_resp = requests.get(f"{LOCAL_API_URL}/openapi.json", timeout=2)
         if api_resp.status_code == 200:
             st.session_state.api_connection_status = "Success"
             st.session_state.api_connection_msg = "Connected"
         else:
             st.session_state.api_connection_status = "Failed"
             st.session_state.api_connection_msg = f"HTTP {api_resp.status_code}"
-    except Exception as e:
+    except Exception:
         st.session_state.api_connection_status = "Failed"
         st.session_state.api_connection_msg = "Offline"
 
@@ -596,11 +595,15 @@ def show_home():
 
         st.markdown("---")
 
+        if IS_REMOTE:
+            st.info("🔒 Integration settings can only be viewed or changed from the host machine (http://localhost:8501).")
+            return
+
         col_jserv, col_jtok = st.columns(2)
         with col_jserv:
             srv_in = st.text_input("Jira Server Base URL:", value=st.session_state.jira_server, key="central_jira_server")
         with col_jtok:
-            tok_in = st.text_input("Jira Personal Access Token (PAT):", value=st.session_state.jira_token, type="password", key="central_jira_token")
+            tok_in = _secret_input("Jira Personal Access Token (PAT):", "jira_token", "central_jira_token")
 
         col_jauth, col_jmail = st.columns(2)
         with col_jauth:
@@ -623,7 +626,7 @@ def show_home():
         with col_cserv:
             csrv_in = st.text_input("Confluence Server URL:", value=st.session_state.conf_server, key="central_conf_server")
         with col_ctok:
-            ctok_in = st.text_input("Confluence Personal Access Token (PAT):", value=st.session_state.conf_token, type="password", key="central_conf_token")
+            ctok_in = _secret_input("Confluence Personal Access Token (PAT):", "conf_token", "central_conf_token")
 
         st.markdown("---")
         st.markdown("##### 🤖 Local AI (Ollama)")
@@ -639,7 +642,7 @@ def show_home():
         with sq_col1:
             sonar_server_in = st.text_input("SonarQube Server:", value=st.session_state.sonar_server, key="central_sonar_server")
         with sq_col2:
-            sonar_token_in = st.text_input("SonarQube Token:", value=st.session_state.sonar_token, type="password", key="central_sonar_token")
+            sonar_token_in = _secret_input("SonarQube Token:", "sonar_token", "central_sonar_token")
         with sq_col3:
             sonar_comp_in = st.text_input("SonarQube Component:", value=st.session_state.sonar_component, key="central_sonar_component")
 
@@ -649,11 +652,11 @@ def show_home():
             sbom_server_in = st.text_input("SBOM Server:", value=st.session_state.sbom_server, key="central_sbom_server")
             sbom_namespace_in = st.text_input("SBOM Namespace ID:", value=st.session_state.sbom_namespace_id, key="central_sbom_namespace")
         with sb_col2:
-            sbom_api_key_in = st.text_input("SBOM API Key:", value=st.session_state.sbom_api_key, key="central_sbom_api_key")
+            sbom_api_key_in = _secret_input("SBOM API Key:", "sbom_api_key", "central_sbom_api_key")
             sbom_app_in = st.text_input("SBOM App ID:", value=st.session_state.sbom_app_id, key="central_sbom_app_id")
         with sb_col3:
-            sbom_api_secret_in = st.text_input("SBOM API Secret:", value=st.session_state.sbom_api_secret, type="password", key="central_sbom_api_secret")
-            
+            sbom_api_secret_in = _secret_input("SBOM API Secret:", "sbom_api_secret", "central_sbom_api_secret")
+
         st.markdown("**Vanguard**")
         vg_col1, vg_col2, vg_col3 = st.columns(3)
         with vg_col1:
@@ -661,7 +664,7 @@ def show_home():
         with vg_col2:
             vg_client_id_in = st.text_input("Vanguard Client ID:", value=st.session_state.vanguard_client_id, key="central_vg_client_id")
         with vg_col3:
-            vg_client_secret_in = st.text_input("Vanguard Client Secret:", value=st.session_state.vanguard_client_secret, type="password", key="central_vg_secret")
+            vg_client_secret_in = _secret_input("Vanguard Client Secret:", "vanguard_client_secret", "central_vg_secret")
 
         settings_changed = (
             st.session_state.jira_server != srv_in or
@@ -713,29 +716,13 @@ def show_home():
             # 1. Test Jira Connection
             if srv_in and tok_in:
                 with st.spinner("Testing Jira Connection..."):
-                    try:
-                        headers = {"Accept": "application/json"}
-                        auth = None
-                        token_clean = tok_in.strip().removeprefix("Bearer ").strip()
-                        if auth_in in ["Corporate Login (Username + Password)", "Jira Cloud/Server Basic (Email/User + Token)"]:
-                            auth = (mail_in.strip(), token_clean)
-                        else:
-                            headers["Authorization"] = f"Bearer {token_clean}"
-                        
-                        resp = requests.get(f"{srv_in.rstrip('/')}/rest/api/2/myself", headers=headers, auth=auth, timeout=8)
-                        if resp.status_code == 200:
-                            user_name = resp.json().get("displayName", "User")
-                            st.session_state.jira_connection_status = "Success"
-                            st.session_state.jira_connection_msg = f"Connected as `{user_name}`"
-                            st.success(f"✅ **Jira Connection Successful!** Connected as `{user_name}`.")
-                        else:
-                            st.session_state.jira_connection_status = "Failed"
-                            st.session_state.jira_connection_msg = f"Auth Failed (HTTP {resp.status_code})"
-                            st.error(f"❌ **Jira Authentication Failed (HTTP {resp.status_code})**. Check server URL and API token.")
-                    except Exception as e:
-                        st.session_state.jira_connection_status = "Failed"
-                        st.session_state.jira_connection_msg = f"Connection Failed ({e})"
-                        st.error(f"❌ **Jira Connection Failed**: Could not connect to server. ({e})")
+                    ok, msg = check_jira_connection(srv_in, tok_in, auth_in, mail_in, timeout=8)
+                st.session_state.jira_connection_status = "Success" if ok else "Failed"
+                st.session_state.jira_connection_msg = msg
+                if ok:
+                    st.success(f"✅ **Jira Connection Successful!** {msg}.")
+                else:
+                    st.error(f"❌ **Jira Connection Failed**: {msg}. Check server URL and API token.")
             else:
                 st.session_state.jira_connection_status = "Failed"
                 st.session_state.jira_connection_msg = "Server URL or Token empty"
@@ -744,32 +731,13 @@ def show_home():
             # 2. Test Confluence Connection
             if csrv_in and ctok_in:
                 with st.spinner("Testing Confluence Connection..."):
-                    try:
-                        headers = {"Accept": "application/json"}
-                        auth = None
-                        token_clean = ctok_in.strip().removeprefix("Bearer ").strip()
-                        if auth_in in ["Corporate Login (Username + Password)", "Jira Cloud/Server Basic (Email/User + Token)"]:
-                            auth = (mail_in.strip(), token_clean)
-                        else:
-                            headers["Authorization"] = f"Bearer {token_clean}"
-                            
-                        base_url = csrv_in.rstrip("/")
-                        if "atlassian.net" in base_url and not base_url.endswith("/wiki"):
-                            base_url = base_url + "/wiki"
-                            
-                        resp = requests.get(f"{base_url}/rest/api/content?limit=1", headers=headers, auth=auth, timeout=8)
-                        if resp.status_code == 200:
-                            st.session_state.conf_connection_status = "Success"
-                            st.session_state.conf_connection_msg = "Connected successfully"
-                            st.success(f"✅ **Confluence Connection Successful!**")
-                        else:
-                            st.session_state.conf_connection_status = "Failed"
-                            st.session_state.conf_connection_msg = f"Auth Failed (HTTP {resp.status_code})"
-                            st.error(f"❌ **Confluence Authentication Failed (HTTP {resp.status_code})**. Check URL and token.")
-                    except Exception as e:
-                        st.session_state.conf_connection_status = "Failed"
-                        st.session_state.conf_connection_msg = f"Connection Failed ({e})"
-                        st.error(f"❌ **Confluence Connection Failed**: Could not connect to server. ({e})")
+                    ok, msg = check_confluence_connection(csrv_in, ctok_in, auth_in, mail_in, timeout=8)
+                st.session_state.conf_connection_status = "Success" if ok else "Failed"
+                st.session_state.conf_connection_msg = msg
+                if ok:
+                    st.success("✅ **Confluence Connection Successful!**")
+                else:
+                    st.error(f"❌ **Confluence Connection Failed**: {msg}. Check URL and token.")
             else:
                 st.session_state.conf_connection_status = "Failed"
                 st.session_state.conf_connection_msg = "Server URL or Token empty"
@@ -797,7 +765,7 @@ def show_home():
             # 4. Test Local API Connection
             with st.spinner("Testing Local API Connection..."):
                 try:
-                    api_resp = requests.get("http://localhost:8000/openapi.json", timeout=2)
+                    api_resp = requests.get(f"{LOCAL_API_URL}/openapi.json", timeout=2)
                     if api_resp.status_code == 200:
                         st.session_state.api_connection_status = "Success"
                         st.session_state.api_connection_msg = "Connected"
@@ -806,10 +774,10 @@ def show_home():
                         st.session_state.api_connection_status = "Failed"
                         st.session_state.api_connection_msg = f"HTTP {api_resp.status_code}"
                         st.error(f"❌ **Local API Connection Failed (HTTP {api_resp.status_code})**")
-                except Exception as e:
+                except Exception:
                     st.session_state.api_connection_status = "Failed"
                     st.session_state.api_connection_msg = "Offline"
-                    st.error("❌ **Local API Connection Failed**: Could not connect to localhost:8000.")
+                    st.error(f"❌ **Local API Connection Failed**: Could not connect to {LOCAL_API_URL}.")
 
             # 5-7. Test SonarQube, SBOM and Vanguard Connections
             with st.spinner("Testing SonarQube, SBOM and Vanguard Connections..."):
@@ -831,6 +799,23 @@ pg = st.navigation({
 })
 st.set_page_config(page_title="Product Owner Suite Hub", layout="wide")
 
+# Remote access gate: tunnel/proxy visitors must provide REMOTE_ACCESS_PASSWORD.
+if IS_REMOTE and not st.session_state.get("remote_authenticated", False):
+    expected_remote_password = os.getenv("REMOTE_ACCESS_PASSWORD", "")
+    st.title("🔒 Product Owner Suite Hub")
+    if not expected_remote_password:
+        st.error("Remote access is disabled. The host must set REMOTE_ACCESS_PASSWORD in its .env file to allow it.")
+        st.stop()
+    with st.form("remote_login"):
+        provided_password = st.text_input("Access password", type="password")
+        submitted = st.form_submit_button("Enter")
+    if submitted:
+        if check_access_password(provided_password, expected_remote_password):
+            st.session_state.remote_authenticated = True
+            st.rerun()
+        st.error("Invalid password.")
+    st.stop()
+
 # Hide the AI Agent from the sidebar menu globally
 st.markdown("""
     <style>
@@ -844,16 +829,7 @@ st.markdown("""
 st.sidebar.markdown("### 🤝 Live Collaboration")
 
 # Auto-detect tunnel URL from request headers if accessed via Cloudflare
-headers = {}
-try:
-    if hasattr(st, "context") and hasattr(st.context, "headers"):
-        headers = st.context.headers or {}
-    else:
-        from streamlit.web.server.websocket_headers import _get_websocket_headers
-        headers = _get_websocket_headers() or {}
-except Exception:
-    pass
-
+headers = request_headers
 host = headers.get("Host", "")
 x_forwarded_host = headers.get("X-Forwarded-Host", "")
 tunnel_host = None
@@ -874,15 +850,20 @@ if tunnel_url:
 if "tunnel_enabled" not in st.session_state:
     st.session_state.tunnel_enabled = False
 
-if st.session_state.tunnel_enabled:
+if IS_REMOTE:
+    # Remote collaborators can use the tools but never control the host tunnel.
+    st.sidebar.caption("Connected remotely through the collaboration tunnel.")
+elif st.session_state.tunnel_enabled:
     if not tunnel_url:
         tunnel_url = start_tunnel(8501)
         
     if tunnel_url:
-        st.sidebar.success("Tunnel Active ���")
+        st.sidebar.success("Tunnel Active 🟢")
         st.sidebar.code(tunnel_url, language="text")
         st.sidebar.link_button("🌐 Open Link", tunnel_url, use_container_width=True)
         st.sidebar.caption("Share this URL with team members to collaborate in real-time.")
+        if not os.getenv("REMOTE_ACCESS_PASSWORD"):
+            st.sidebar.warning("Set REMOTE_ACCESS_PASSWORD in .env: remote visitors are blocked until a password is configured.")
     else:
         tunnel_err = get_tunnel_error()
         if tunnel_err:

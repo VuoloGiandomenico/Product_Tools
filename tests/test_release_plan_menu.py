@@ -20,9 +20,12 @@ NEW_FILES = {"rr0": "0_Overview.py", "rr1": "1_Scope.py", "rr8": "8_Notification
 class NavOrderTests(unittest.TestCase):
     def test_order_0_to_8_and_page7_path(self):
         self.assertEqual([p[0] for p in RELEASE_PLAN_PAGES], list(range(9)))
-        self.assertEqual([p[2][0] for p in RELEASE_PLAN_PAGES], list("012345678"))
+        titles = [p[2] for p in RELEASE_PLAN_PAGES]
+        self.assertTrue(all(t and t.strip() == t for t in titles), titles)
+        self.assertEqual(len(titles), len(set(titles)))
+        self.assertEqual(RELEASE_PLAN_PAGES[0][2], "Overview")
         self.assertEqual(RELEASE_PLAN_PAGES[7][1], "tools/7_Release_Plan.py")
-        self.assertEqual(RELEASE_PLAN_PAGES[7][2], "7 · Post-actions")
+        self.assertEqual(RELEASE_PLAN_PAGES[7][2], "Post Actions")
         self.assertIsNone(RELEASE_PLAN_PAGES[7][3])  # url_path unchanged (default)
         for _, path, _, _ in RELEASE_PLAN_PAGES:
             self.assertTrue((ROOT / path).is_file(), path)
@@ -32,7 +35,7 @@ class NavOrderTests(unittest.TestCase):
     def test_app_uses_menu_and_keeps_ai_agent_hidden(self):
         src = (ROOT / "app.py").read_text(encoding="utf-8")
         ast.parse(src)
-        self.assertIn('"Release Plan": release_plan_nav_pages', src)
+        self.assertRegex(src, r'"[^"]*Release Plan": release_plan_nav_pages')
         self.assertIn('a[href$="AI_Agent"]', src)
         self.assertIn("rr_overview_page", src)
         for f in ("1_Quarterly_Planner", "2_Sprint_Review", "3_Release_Notes", "4_Sprint_KPIs",

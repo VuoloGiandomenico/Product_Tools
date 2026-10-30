@@ -15,6 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfgen import canvas
 from reportlab.graphics.shapes import Drawing, Line, PolyLine
 from PIL import Image as PILImage
+from utils.kpi_helpers import sprint_kpi_summary_df
 from utils.pdf_helpers import (
     SmartKeepTogether, hex_to_reportlab_color, convert_markdown_to_pdf_rich_text,
     split_bugs_and_topics, sort_items_by_label_priority, get_team_label, get_custom_label, sort_items_by_type_and_epic,
@@ -328,7 +329,7 @@ def build_sprint_review_pdf(overview_df, outlook_df, config):
     
     # 2. Section 1: Overview
     topics_ov, bugs_ov = split_bugs_and_topics(overview_df)
-    
+
     if not topics_ov.empty or not bugs_ov.empty:
         prefix_flowables = [
             Paragraph("Overview:", section_title_style),
@@ -498,6 +499,21 @@ def build_sprint_review_pdf(overview_df, outlook_df, config):
                     Spacer(1, 10)
                 ] + extra_blocks))
             
+    # 2d. Sprint KPI Summary (optional, rendered right before the Outlook section)
+    if config.get("include_sprint_kpis", False):
+        selected_kpis = config.get("sprint_kpi_selection") or []
+        metrics = config.get("current_sprint_metrics") or {}
+        kpi_df = sprint_kpi_summary_df(selected_kpis, metrics)
+        if not kpi_df.empty:
+            kpi_blocks = build_custom_extra_table_pdf_block(kpi_df, primary_color, styles, is_landscape=True)
+            if kpi_blocks:
+                story.append(PageBreak())
+                story.append(SmartKeepTogether([
+                    Paragraph("Sprint KPI Summary:", section_title_style),
+                    Spacer(1, 10)
+                ] + kpi_blocks))
+                story.append(Spacer(1, 12))
+
     # 3. Section 2: Outlook (Page Break isolation)
     topics_ot, bugs_ot = split_bugs_and_topics(outlook_df)
     next_release_df = config.get('next_release_df')
@@ -636,3 +652,5 @@ def build_sprint_review_pdf(overview_df, outlook_df, config):
 
 
 # ---------------------------------------------------------
+
+

@@ -34,7 +34,7 @@ if "agent_messages" not in st.session_state:
 
 # Credentials from session state or .env
 API_KEY = os.getenv("API_KEY", "")
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("LOCAL_API_URL", "http://localhost:8000").rstrip("/")
 
 # ==========================================
 # TOOL DEFINITIONS (Dynamic OpenAPI Parsing)

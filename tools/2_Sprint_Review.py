@@ -1,33 +1,30 @@
 import streamlit as st
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 from utils.persistence import (
     load_df_from_csv, save_df_to_csv, 
     load_custom_tables_from_json, save_custom_tables_to_json, 
     get_last_mtime, enable_auto_save, setup_autorefresh
 )
-from utils.jira_helpers import fetch_jira_tickets_dataset, map_jira_status, build_quarterly_epic_progress_table
+from utils.jira_helpers import (
+    map_jira_status, build_quarterly_epic_progress_table,
+    map_epic_status_for_completion_table,
+)
+from utils.sprint_review_jira import fetch_sprint_review_dataset, selected_issue_types, JiraFetchError
+from utils.kpi_helpers import default_sprint_review_kpis, SPRINT_REVIEW_KPI_OPTIONS, sprint_kpi_summary_df
 import requests
 import os
-import io
-import re
 import base64
 from dotenv import load_dotenv
 from PIL import Image as PILImage
 
 # ReportLab imports for beautiful PDF generation
-from reportlab.lib.pagesizes import letter, landscape
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, Image, Flowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfgen import canvas
-from reportlab.graphics.shapes import Drawing, Line, PolyLine
 
 # Extracted PDF helper functions
 from utils.pdf_helpers import (
-    SmartKeepTogether, hex_to_reportlab_color, convert_markdown_to_pdf_rich_text,
-    split_bugs_and_topics, sort_items_by_label_priority, get_team_label, sort_items_by_type_and_epic,
-    draw_background_landscape, NumberedCanvas, build_demos_pdf_block, build_next_releases_pdf_block,
-    format_status_with_emoji, build_custom_extra_table_pdf_block, get_arrow_drawing, get_jira_link_paragraph,
+    sort_items_by_label_priority, sort_items_by_type_and_epic,
     extract_numeric_version
 )
 
@@ -43,11 +40,8 @@ SPR_FILES = [
 ]
 
 def save_sprint_review_shared():
-    import traceback as _tb
-    _ct = st.session_state.get('custom_tables', [])
-    _trace = ''.join(_tb.format_stack(limit=6))
-    with open("data/debug_save_trace.txt", "a") as f:
-        f.write(f"--- SAVE --- custom_tables length: {len(_ct)}\n{_trace}\n")
+    logger.debug("Saving Sprint Review shared workbook (%d custom tables)",
+                 len(st.session_state.get('custom_tables') or []))
     save_df_to_csv(st.session_state.get("overview_df"), "sprint_review_overview.csv")
     save_df_to_csv(st.session_state.get("outlook_df"), "sprint_review_outlook.csv")
     save_custom_tables_to_json(st.session_state.get("custom_tables"), "sprint_review_custom_tables.json")
@@ -80,18 +74,18 @@ def save_sprint_review_label_order():
         "sprint_review_label_order_input", []
     )
 
-def map_jira_status(status_name):
-    if not status_name or not isinstance(status_name, str):
-        return "To Do"
-    s_clean = status_name.strip().lower()
-    if s_clean in ["blocked", "impeded"]:
-        return "Blocked"
-    elif s_clean in ["resolved", "closed", "done", "acceptance test"]:
-        return "Done"
-    elif s_clean in ["to do", "todo", "to-do", "backlog", "open", "new", "reopened"]:
-        return "To Do"
-    else:
-        return "In Progress"
+
+def rebuild_current_sprint_kpi_df():
+    """Rebuild the KPI summary table from the current sprint metrics and selected KPI config."""
+    selection = st.session_state.get("sprint_kpi_selection") or default_sprint_review_kpis()
+    if isinstance(selection, str):
+        selection = [selection]
+    valid_selection = [name for name in selection if name in SPRINT_REVIEW_KPI_OPTIONS]
+    if not valid_selection:
+        valid_selection = default_sprint_review_kpis()
+    st.session_state.sprint_kpi_selection = valid_selection
+    metrics = st.session_state.get("current_sprint_metrics") or {}
+    st.session_state.current_sprint_kpi_df = sprint_kpi_summary_df(valid_selection, metrics)
 
 def check_any_selected(df_key, editor_key, display_df_indices):
     if st.session_state.get(df_key) is None:
@@ -165,8 +159,8 @@ def sync_editor_changes(df_key, editor_key, display_df_indices):
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
         indices_to_drop = [display_df_indices[i] for i in deleted_indices if i < len(display_df_indices)]
-        df.drop(index=indices_to_drop, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=indices_to_drop)
+        df = df.reset_index(drop=True)
         has_real_edits = True
         
     # Added rows
@@ -206,8 +200,8 @@ def sync_custom_table_changes(table_idx, editor_key, display_df_indices):
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
         indices_to_drop = [display_df_indices[i] for i in deleted_indices if i < len(display_df_indices)]
-        df.drop(index=indices_to_drop, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=indices_to_drop)
+        df = df.reset_index(drop=True)
         has_real_edits = True
         
     # Added rows
@@ -241,8 +235,8 @@ def sync_next_release_changes():
     # Deleted rows
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
-        df.drop(index=deleted_indices, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=deleted_indices)
+        df = df.reset_index(drop=True)
         
     # Added rows
     added_rows = edits.get("added_rows", [])
@@ -418,6 +412,14 @@ if 'custom_bug_column' not in st.session_state:
         "labels": _default_bug_col_labels
     }
 
+if 'include_sprint_kpis' not in st.session_state:
+    env_default_kpis = os.getenv("DEFAULT_INCLUDED_SPRINT_KPIS") or os.getenv("DEFAULT_INCLUDE_SPRINT_KPIS") or ""
+    st.session_state.include_sprint_kpis = bool(env_default_kpis.strip())
+if 'sprint_kpi_selection' not in st.session_state:
+    st.session_state.sprint_kpi_selection = default_sprint_review_kpis()
+if 'current_sprint_kpi_df' not in st.session_state:
+    st.session_state.current_sprint_kpi_df = pd.DataFrame(columns=["KPI", "Value"])
+
 # ---------------------------------------------------------
 # Shared Collaboration Sync Logic
 # ---------------------------------------------------------
@@ -434,6 +436,8 @@ def load_sprint_review_shared():
     nr_df = load_df_from_csv("sprint_review_next_release.csv")
     if nr_df is not None:
         st.session_state.next_release_df = nr_df
+    if st.session_state.get("include_sprint_kpis"):
+        rebuild_current_sprint_kpi_df()
 
 # Only run auto-refresh on the Workbook tab to prevent resource overhead and iframe blinking on other tabs
 if st.session_state.get("active_tab", "🔌 Ingestion") == "✍️ Workbook":
@@ -782,242 +786,32 @@ def load_mock_sprint_data():
 
 # 4. Jira Connection API Fetcher (Bearer Token Auth PAT)
 # ---------------------------------------------------------
-def fetch_jira_tickets_dataset(server, token, query_val, is_sprint=True, auth_type="Personal Access Token (Bearer PAT)", email="", only_unresolved=False, include_raw_status=False):
-    if not server or not token:
-        st.error("Please provide Jira Server URL and Personal Access Token (PAT).")
-        return None
-        
-    # Safe cleanup of token inputs (removes accidental whitespaces or prepended 'Bearer ')
-    token_clean = token.strip()
-    if token_clean.lower().startswith("bearer "):
-        token_clean = token_clean[7:].strip()
-        
-    if is_sprint:
-        if query_val.isdigit():
-            jql = f"sprint = {query_val}"
-        else:
-            jql = f"sprint = '{query_val}'"
-            
-        if only_unresolved:
-            jql += " AND resolution is empty"
-            
-        # Filter issue types accepted by the Jira filter
-        jira_types = []
-        if st.session_state.get("inc_all", False):
-            jira_types = ["Bug", "Epic", "Improvement", "Story", "Task", "Sub-task", "Technical Sub-task"]
-        else:
-            if st.session_state.get("inc_story"):
-                jira_types.append("Story")
-            if st.session_state.get("inc_bug"):
-                jira_types.append("Bug")
-            if st.session_state.get("inc_task"):
-                jira_types.extend(["Task", "Sub-task"])
-            if st.session_state.get("inc_tech"):
-                jira_types.extend(["Task", "Epic"])
-            if st.session_state.get("inc_subtask"):
-                jira_types.extend(["Sub-task", "Technical Sub-task"])
-            if st.session_state.get("inc_improvement"):
-                jira_types.append("Improvement")
-        
-        allowed_jira_types = {"Bug", "Epic", "Improvement", "Story", "Task", "Sub-task", "Technical Sub-task"}
-        jira_types = [t for t in sorted(list(set(jira_types))) if t in allowed_jira_types]
-        
-        if jira_types:
-            types_str = ", ".join([f"'{t}'" for t in jira_types])
-            jql += f" AND issuetype in ({types_str})"
-        else:
-            jql += " AND issuetype in ('')"
-    else:
-        jql = query_val
-        
-    url = f"{server.rstrip('/')}/rest/api/2/search"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "X-Atlassian-Token": "nocheck"
-    }
+def load_sprint_review_dataset(server, token, query_val, is_sprint=True, auth_type="Personal Access Token (Bearer PAT)", email="", only_unresolved=False, include_raw_status=False):
+    """Fetch the Sprint Review dataset and render any problem in the UI.
 
-    
-    auth = None
-    if auth_type == "Corporate Login (Username + Password)" or auth_type == "Jira Cloud/Server Basic (Email/User + Token)":
-        auth = (email.strip(), token_clean)
-    else:
-        headers["Authorization"] = f"Bearer {token_clean}"
-        
-    params = {
-        "jql": jql,
-        "maxResults": 100,
-        "fields": "key,summary,status,fixVersions,parent,customfield_10000,customfield_10008,customfield_10009,customfield_10014,assignee,issuetype,labels"
-    }
-
-    
+    Returns a DataFrame (possibly empty) or None when Jira could not be queried.
+    The Jira logic lives in utils.sprint_review_jira (pure, unit-tested).
+    """
     try:
-        if auth:
-            response = requests.get(url, headers=headers, params=params, auth=auth, timeout=15)
-        else:
-            response = requests.get(url, headers=headers, params=params, timeout=15)
-
-        
-        if response.status_code != 200:
-            st.error(f"Jira API connection failed ({response.status_code}): {response.text}")
-            return None
-            
-        try:
-            data = response.json()
-        except ValueError as json_err:
+        df = fetch_sprint_review_dataset(
+            server, token, query_val,
+            is_sprint=is_sprint, auth_type=auth_type, email=email,
+            only_unresolved=only_unresolved, include_raw_status=include_raw_status,
+            issue_types=selected_issue_types(st.session_state),
+            include_all_types=bool(st.session_state.get("inc_all", False)),
+        )
+    except JiraFetchError as err:
+        if err.body_preview is not None:
             st.error("⚠️ **Jira returned a non-JSON response (Status 200 OK).**")
             st.warning("This usually happens when your company's Single Sign-On (SSO) gateway, Proxy, or Firewall intercepts the API call and redirects it to a login webpage or CAPTCHA screen.")
             st.write("**First 1000 characters of the intercepted response:**")
-            st.code(response.text[:1000], language="html")
-            return None
-            
-        issues = data.get("issues", [])
-
-        
-        if not issues:
-            st.warning("No issues found matching the query parameters.")
-            return pd.DataFrame()
-            
-        rows = []
-        for issue in issues:
-            fields = issue.get("fields", {})
-            key = issue.get("key", "N/A")
-            summary = fields.get("summary", "Untitled Task")
-            
-            # Status
-            status_obj = fields.get("status") or {}
-            status = map_jira_status(status_obj.get("name", "To Do"))
-            resolution_obj = fields.get("resolution") or {}
-            res_name = resolution_obj.get("name")
-            if res_name:
-                status = f"{status} [{res_name}]"
-            
-            # Fix Version
-            fix_versions = fields.get("fixVersions", [])
-            raw_fix_version = ", ".join([v.get("name", "") for v in fix_versions]) if fix_versions else ""
-            fix_version = extract_numeric_version(raw_fix_version)
-            
-            # Assignee
-            assignee_obj = fields.get("assignee")
-            assignee = assignee_obj.get("displayName", "Unassigned") if assignee_obj else "Unassigned"
-            
-            # Epic detection
-            epic = "-"
-            epic_key = None
-            
-            for custom_field in ["customfield_10014", "customfield_10000", "customfield_10008", "customfield_10009"]:
-                cf_val = fields.get(custom_field)
-                if cf_val:
-                    if isinstance(cf_val, dict):
-                        epic_key = cf_val.get("key") or str(cf_val)
-                    else:
-                        epic_key = str(cf_val)
-                    break
-            
-            parent_summary = None
-            parent = fields.get("parent")
-            if parent:
-                parent_key = parent.get("key")
-                parent_fields = parent.get("fields") or {}
-                parent_summary = parent_fields.get("summary")
-                if not epic_key:
-                    epic_key = parent_key
-            
-            if epic_key:
-                if parent and epic_key == parent.get("key") and parent_summary:
-                    epic = f"{epic_key} - {parent_summary}"
-                else:
-                    epic = epic_key
-                        
-            # Issue Type detection & mapping
-            issue_type_obj = fields.get("issuetype") or {}
-            issue_type_raw = issue_type_obj.get("name", "Task")
-            
-            raw_lower = issue_type_raw.lower()
-            issue_type = None
-            if "technical sub-task" in raw_lower or "tech sub-task" in raw_lower or "technical subtask" in raw_lower or "tech subtask" in raw_lower or ("sub-task" in raw_lower and ("tech" in raw_lower or "technical" in raw_lower)):
-                issue_type = "Technical Sub-task"
-            elif "story" in raw_lower:
-                issue_type = "User Story"
-            elif "bug" in raw_lower:
-                issue_type = "Bug"
-            elif "improvement" in raw_lower:
-                issue_type = "Improvement"
-            elif "technical" in raw_lower or "tech" in raw_lower or "performance" in raw_lower or "scaling" in raw_lower or "infrastructure" in raw_lower:
-                issue_type = "Technical Task"
-            elif "sub-task" in raw_lower or "subtask" in raw_lower:
-                issue_type = "Sub-task"
-            elif "task" in raw_lower:
-                issue_type = "Task"
-            else:
-                issue_type = issue_type_raw if st.session_state.get("inc_all", False) else "Technical Task"
-                
-            # Labels
-            labels_list = fields.get("labels", [])
-            labels_str = ", ".join(labels_list) if isinstance(labels_list, list) else ""
-                
-            row = {
-                "Key": key,
-                "Summary": summary,
-                "Epic": epic,
-                "Status": status,
-                "Fix Version": fix_version,
-                "Outlook": "",
-                "Sprint Review": True,
-                "Release Notes": True,
-                "Assignee": assignee,
-                "Demo": False,
-                "Type": issue_type,
-                "Labels": labels_str
-            }
-            if include_raw_status:
-                row["Raw Status"] = status_obj.get("name", "To Do")
-            rows.append(row)
-            
-        # Bulk resolve Epic summaries from Jira
-        epic_keys_to_resolve = set()
-        for r in rows:
-            ep_val = r["Epic"]
-            if ep_val != "-" and " - " not in ep_val:
-                epic_keys_to_resolve.add(ep_val)
-                
-        if epic_keys_to_resolve:
-            try:
-                keys_str = ",".join([f"'{k}'" for k in epic_keys_to_resolve])
-                epic_jql = f"key in ({keys_str})"
-                epic_url = f"{server.rstrip('/')}/rest/api/2/search"
-                epic_params = {
-                    "jql": epic_jql,
-                    "fields": "key,summary",
-                    "maxResults": 100
-                }
-                if auth:
-                    epic_resp = requests.get(epic_url, headers=headers, params=epic_params, auth=auth, timeout=10)
-                else:
-                    epic_resp = requests.get(epic_url, headers=headers, params=epic_params, timeout=10)
-                
-                if epic_resp.status_code == 200:
-                    epic_data = epic_resp.json()
-                    epic_map = {}
-                    for epic_issue in epic_data.get("issues", []):
-                        e_key = epic_issue.get("key")
-                        e_fields = epic_issue.get("fields") or {}
-                        e_summary = e_fields.get("summary")
-                        if e_key and e_summary:
-                            epic_map[e_key] = f"{e_key} - {e_summary}"
-                            
-                    for r in rows:
-                        ep_val = r["Epic"]
-                        if ep_val in epic_map:
-                            r["Epic"] = epic_map[ep_val]
-            except Exception:
-                pass
-                
-        return pd.DataFrame(rows)
-    except Exception as e:
-        st.error(f"Exception connecting to Jira: {str(e)}")
+            st.code(err.body_preview, language="html")
+        else:
+            st.error(err.message)
         return None
+    if df.empty:
+        st.warning("No issues found matching the query parameters.")
+    return df
 
 def fetch_epic_completion(server, token, epic_keys, epic_link_field, auth_type="Personal Access Token (Bearer PAT)", email=""):
     """Calculate progress for each Epic from the status of its linked issues."""
@@ -1202,7 +996,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                 
             if st.button("🔌 Fetch Overview", use_container_width=True):
                 with st.spinner("Downloading delivered tickets from Jira..."):
-                    res_df = fetch_jira_tickets_dataset(
+                    res_df = load_sprint_review_dataset(
                         st.session_state.jira_server,
                         st.session_state.jira_token,
                         ov_val,
@@ -1244,7 +1038,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                 
             if st.button("🔌 Fetch Outlook", use_container_width=True):
                 with st.spinner("Downloading planned tickets from Jira..."):
-                    res_df = fetch_jira_tickets_dataset(
+                    res_df = load_sprint_review_dataset(
                         st.session_state.jira_server,
                         st.session_state.jira_token,
                         ot_val,
@@ -1308,8 +1102,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
             )
         st.caption(f"Project: {project_key.strip()} · Required labels: Committed & Quarter · Epic link: Epic Link")
         if st.button("📈 Load Quarterly Epic Progress", use_container_width=True):
-            with open("data/debug_click.txt", "a") as f:
-                f.write(f"Button clicked! project_key={project_key}, committed={committed_epic_label}, quarter={quarterly_epic_label}\n")
+            logger.debug(f"Button clicked! project_key={project_key}, committed={committed_epic_label}, quarter={quarterly_epic_label}")
             if not committed_epic_label.strip():
                 st.error("Enter the committed Epic label before loading the table.")
             elif not quarterly_epic_label.strip():
@@ -1328,19 +1121,16 @@ if st.session_state.active_tab == "🔌 Ingestion":
                             st.session_state.jira_email,
                             project_key=project_key.strip()
                         )
-                    with open("data/debug_click.txt", "a") as f:
-                        f.write(f"build_quarterly_epic_progress_table returned new_table: {new_table is not None}\n")
+                    logger.debug(f"build_quarterly_epic_progress_table returned new_table: {new_table is not None}")
                     if new_table is not None:
-                        with open("data/debug_click.txt", "a") as f:
-                            f.write(f"new_table df empty: {new_table['df'].empty}\n")
+                        logger.debug(f"new_table df empty: {new_table['df'].empty}")
                         if new_table["df"].empty:
                             st.session_state.ingestion_feedback = {
                                 "type": "warning",
                                 "text": f"⚠️ JQL query returned 0 Epics for committed label '{committed_epic_label.strip()}' and quarter label '{quarterly_epic_label.strip()}'."
                             }
                         else:
-                            with open("data/debug_click.txt", "a") as f:
-                                f.write(f"Before append: custom_tables length = {len(st.session_state.custom_tables)}\n")
+                            logger.debug(f"Before append: custom_tables length = {len(st.session_state.custom_tables)}")
                             existing_index = next(
                                 (index for index, table in enumerate(st.session_state.custom_tables)
                                  if table.get("table_type") == "quarterly_epic_progress"),
@@ -1350,8 +1140,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                                 st.session_state.custom_tables.append(new_table)
                             else:
                                 st.session_state.custom_tables[existing_index] = new_table
-                            with open("data/debug_click.txt", "a") as f:
-                                f.write(f"After append: custom_tables length = {len(st.session_state.custom_tables)}\n")
+                            logger.debug(f"After append: custom_tables length = {len(st.session_state.custom_tables)}")
                             ext_idx = len(st.session_state.custom_tables) - 1
                             # Clear stale widget state so the workbook tab correctly reflects the newly ingested table
                             for key_prefix in ["rename_ext_", "pos_ext_", "editor_ext_", "cols_select_", "sort_ext_", "filter_ext_"]:
@@ -1364,8 +1153,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                                 "text": f"🟢 Successfully loaded {len(new_table['df'])} committed Epics for {quarterly_epic_label.strip()}!"
                             }
                             save_sprint_review_shared()
-                            with open("data/debug_click.txt", "a") as f:
-                                f.write(f"After save: custom_tables length = {len(st.session_state.custom_tables)}\n")
+                            logger.debug(f"After save: custom_tables length = {len(st.session_state.custom_tables)}")
                         st.rerun()
                     else:
                         st.session_state.ingestion_feedback = {
@@ -1374,10 +1162,55 @@ if st.session_state.active_tab == "🔌 Ingestion":
                         }
                         st.rerun()
                 except Exception as e:
-                    import traceback
-                    with open("data/debug_click.txt", "a") as f:
-                        f.write(f"tools/2_Sprint_Review.py button click EXCEPTION: {e}\n{traceback.format_exc()}\n")
+                    logger.exception(f"tools/2_Sprint_Review.py button click EXCEPTION: {e}")
                     st.error(f"Error: {e}")
+
+    st.divider()
+
+    # Sprint KPI summary (optional section of the generated PDF)
+    st.subheader("📊 Sprint KPIs (Optional)")
+    st.caption("Include a compact KPI snapshot in the generated Sprint Review PDF. This uses the current sprint metrics already calculated in the Sprint KPIs page.")
+
+    def _sync_include_sprint_kpis():
+        st.session_state.include_sprint_kpis = st.session_state.include_sprint_kpis_widget
+        if st.session_state.include_sprint_kpis:
+            rebuild_current_sprint_kpi_df()
+
+    def _sync_sprint_kpi_selection():
+        st.session_state.sprint_kpi_selection = list(st.session_state.sprint_kpi_selection_widget)
+        rebuild_current_sprint_kpi_df()
+
+    # Widget keys are separate from the persisted keys so the choice survives tab switches
+    # (Streamlit drops widget state for widgets that are not rendered in a run).
+    st.session_state.include_sprint_kpis_widget = bool(st.session_state.get("include_sprint_kpis", False))
+    st.checkbox(
+        "Include KPI section in Sprint Review",
+        key="include_sprint_kpis_widget",
+        on_change=_sync_include_sprint_kpis,
+        help="When enabled, the report adds the KPI summary block right before the Outlook section."
+    )
+    if st.session_state.get("include_sprint_kpis", False):
+        # Always rebuild so the preview reflects the latest metrics from the Sprint KPIs page
+        # (otherwise it stays stale until the selection changes).
+        rebuild_current_sprint_kpi_df()
+        current_selection = [
+            name for name in (st.session_state.get("sprint_kpi_selection") or default_sprint_review_kpis())
+            if name in SPRINT_REVIEW_KPI_OPTIONS
+        ]
+        st.session_state.sprint_kpi_selection_widget = current_selection
+        st.multiselect(
+            "KPI metrics to include",
+            options=SPRINT_REVIEW_KPI_OPTIONS,
+            key="sprint_kpi_selection_widget",
+            placeholder="Select KPI metrics...",
+            on_change=_sync_sprint_kpi_selection
+        )
+        if st.session_state.get("current_sprint_metrics"):
+            st.dataframe(st.session_state.get("current_sprint_kpi_df", pd.DataFrame(columns=["KPI", "Value"])), use_container_width=True, hide_index=True)
+        else:
+            st.info("Run the KPI report first in the Sprint KPIs page to populate the current sprint metrics for this block.")
+    else:
+        st.caption("KPI section disabled for this export.")
 
     st.divider()
 
@@ -1444,7 +1277,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
             st.caption("The table will include a Completion column. Epics without linked tickets will show ‘-’.")
         if st.button("🔌 Fetch Custom Table", use_container_width=True):
             with st.spinner("Downloading custom tickets from Jira..."):
-                res_df = fetch_jira_tickets_dataset(
+                res_df = load_sprint_review_dataset(
                     st.session_state.jira_server,
                     st.session_state.jira_token,
                     custom_jql,
@@ -1548,7 +1381,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                 if epic_col_detected:
                     norm_cols[epic_col_detected] = 'Epic'
                 if norm_cols:
-                    csv_df.rename(columns=norm_cols, inplace=True)
+                    csv_df = csv_df.rename(columns=norm_cols)
                 for req in ['Key', 'Summary', 'Epic', 'Status', 'Fix Version']:
                     if req not in csv_df.columns:
                         csv_df[req] = "N/A"
@@ -1647,7 +1480,7 @@ if st.session_state.active_tab == "🔌 Ingestion":
                 if epic_col_detected:
                     norm_cols[epic_col_detected] = 'Epic'
                 if norm_cols:
-                    csv_df.rename(columns=norm_cols, inplace=True)
+                    csv_df = csv_df.rename(columns=norm_cols)
                 for req in ['Key', 'Summary', 'Epic', 'Status', 'Fix Version']:
                     if req not in csv_df.columns:
                         csv_df[req] = "N/A"
@@ -1711,7 +1544,6 @@ if st.session_state.active_tab == "🔌 Ingestion":
 # ---------------------------------------------------------
 elif st.session_state.active_tab == "✍️ Workbook":
     st.subheader("✍️ Workspace Workbooks: Commercial Fine-Tuning")
-    import time
     st.markdown(
         f"<div style='background-color:#1E3A8A; padding:8px 12px; border-radius:8px; border:1px solid #3B82F6; margin-bottom:12px; font-size:14px; color:#F8FAFC; display:flex; align-items:center; gap:8px;'>"
         f"<span style='color:#10B981; font-weight:bold;'>🟢 Connected to Shared Workbook</span> "
@@ -1825,10 +1657,12 @@ elif st.session_state.active_tab == "✍️ Workbook":
             placeholder="Choose labels in presentation order...",
             on_change=save_sprint_review_label_order
         )
-        
+
+        st.divider()
+
         st.markdown("#### 🐛 Bugs Table Configuration")
         st.caption("Enable a custom column in the Bugs tables by selecting the exact labels you want to extract.")
-        
+
         col_bug1, col_bug2 = st.columns([1, 2])
         with col_bug1:
             if "sr_bug_col_name" not in st.session_state:
@@ -1836,13 +1670,13 @@ elif st.session_state.active_tab == "✍️ Workbook":
             bug_col_name = st.text_input("Custom Column Name:", key="sr_bug_col_name")
             if bug_col_name != st.session_state.custom_bug_column.get("name"):
                 st.session_state.custom_bug_column["name"] = bug_col_name
-                
+
         with col_bug2:
             current_labels = st.session_state.custom_bug_column.get("labels", [])
             for l in current_labels:
                 if l not in available_labels:
                     available_labels.append(l)
-                    
+
             bug_col_labels = st.multiselect(
                 "Labels to Match",
                 options=available_labels,
@@ -1854,7 +1688,7 @@ elif st.session_state.active_tab == "✍️ Workbook":
                 st.session_state.custom_bug_column["labels"] = bug_col_labels
                 st.session_state.custom_bug_column["enabled"] = len(bug_col_labels) > 0
                 st.rerun()
-                
+
         st.divider()
 
         # Subtabs for separating Overview, Outlook, and optional Custom Table editing

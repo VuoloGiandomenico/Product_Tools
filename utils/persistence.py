@@ -1,8 +1,34 @@
 import os
 import json
+import tempfile
 import pandas as pd
+from utils.df_helpers import blank_if_missing
+import logging
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = "data"
+
+
+def _atomic_write(path, write_fn):
+    """Write a file atomically: write to a temp file in the same dir, then os.replace().
+
+    Readers (e.g. other collaborators' auto-refresh) never observe a half-written file.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp_", suffix=os.path.splitext(path)[1])
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            write_fn(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 def get_last_mtime(files):
     """Returns the maximum modification time among a list of filenames inside DATA_DIR."""
@@ -22,10 +48,10 @@ def save_df_to_csv(df, filename):
         if os.path.exists(path):
             try:
                 os.remove(path)
-            except Exception:
-                pass
+            except OSError:
+                logger.warning("Could not remove empty workbook file %s", path, exc_info=True)
     else:
-        df.to_csv(path, index=False)
+        _atomic_write(path, lambda f: df.to_csv(f, index=False))
 
 def load_df_from_csv(filename):
     """Loads a dataframe from a CSV file in the data directory, returning None if not found or empty."""
@@ -40,7 +66,7 @@ def load_df_from_csv(filename):
             string_cols = ["Key", "Type", "Summary", "Epic", "Status", "Fix Version", "Labels", "Assignee", "Outlook"]
             for col in string_cols:
                 if col in df.columns:
-                    df[col] = df[col].fillna("").astype(str)
+                    df[col] = blank_if_missing(df[col]).astype(str)
 
             bool_cols = ["Select", "Demo", "Sprint Review", "Release Notes"]
             for col in bool_cols:
@@ -49,6 +75,7 @@ def load_df_from_csv(filename):
 
             return df
         except Exception:
+            logger.warning("Could not load workbook file %s", path, exc_info=True)
             return None
     return None
 
@@ -57,8 +84,7 @@ def save_custom_tables_to_json(custom_tables, filename):
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR, exist_ok=True)
     path = os.path.join(DATA_DIR, filename)
-    with open(os.path.join(DATA_DIR, "debug_custom_tables.txt"), "a") as f:
-        f.write(f"save_custom_tables_to_json called with {len(custom_tables) if custom_tables else 0} tables\n")
+    logger.debug(f"save_custom_tables_to_json called with {len(custom_tables) if custom_tables else 0} tables")
     if custom_tables is None:
         custom_tables = []
     
@@ -68,10 +94,10 @@ def save_custom_tables_to_json(custom_tables, filename):
         df_records = []
         if isinstance(df_val, pd.DataFrame):
             df_clean = df_val.copy()
-            # Safely replace pd.NA, NaT, and float('nan') values with empty strings
+            # Replace pd.NA, NaT and float('nan') with empty strings (cast first: pandas 4
+            # refuses to fill a float column with a string).
             for col in df_clean.columns:
-                df_clean[col] = df_clean[col].fillna("").astype(object)
-                df_clean.loc[df_clean[col] == pd.NA, col] = ""
+                df_clean[col] = df_clean[col].astype(object).where(df_clean[col].notna(), "")
             df_records = df_clean.to_dict(orient="records")
         elif isinstance(df_val, list):
             df_records = df_val
@@ -80,8 +106,7 @@ def save_custom_tables_to_json(custom_tables, filename):
         serialized_item["df"] = df_records
         serialized.append(serialized_item)
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(serialized, f, indent=2, ensure_ascii=False)
+    _atomic_write(path, lambda f: json.dump(serialized, f, indent=2, ensure_ascii=False))
 
 def load_custom_tables_from_json(filename):
     """Loads and deserializes custom tables from a JSON file in the data directory."""
@@ -98,6 +123,7 @@ def load_custom_tables_from_json(filename):
                 deserialized.append(deserialized_item)
             return deserialized
         except Exception:
+            logger.warning("Could not load custom tables file %s", path, exc_info=True)
             return None
     return None
 
@@ -120,9 +146,7 @@ def enable_auto_save(save_callback):
             try:
                 save_callback()
             except Exception as e:
-                import traceback
-                with open("data/debug_save_error.txt", "w") as f:
-                    f.write(f"SAVE ERROR:\n" + traceback.format_exc())
+                logger.exception("Workbook auto-save failed")
         st._original_rerun(*args, **kwargs)
     st.rerun = custom_rerun
 

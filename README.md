@@ -51,6 +51,8 @@ Before launching, configure your corporate server details:
    * **SonarQube KPIs (optional):** Set `SONAR_SERVER`, `SONAR_TOKEN` (a user token with Browse permission) and `SONAR_COMPONENT` (a project, application or portfolio key) to add Code Smells, Security Issues and Coverage % to Sprint KPIs. Values are taken from Sonar's history on the sprint end date. On the next publish, three columns are appended to the existing Confluence KPI table (older rows stay empty) together with a Code Quality chart. Leave any of the three empty to turn this off.
    * **SBOM Inventory KPI (optional):** Set `SBOM_SERVER`, `SBOM_API_KEY` and `SBOM_API_SECRET` (created in your Service Board), `SBOM_NAMESPACE_ID` and `SBOM_APP_ID` to add Dependencies Findings (CVEs in dependencies across dev and prod, as shown on the SBOM Inventory app card). The API has no history, so the value is the one at calculation time. It is appended as one more column to the Confluence KPI table and to the Code Quality chart.
    * **Vanguard KPI (optional):** Set `VANGUARD_PROJECT_ID`, `VANGUARD_CLIENT_ID` and `VANGUARD_CLIENT_SECRET` in your local `.env`. Also set `VANGUARD_AUTH_URL` (OAuth token URL) and `VANGUARD_API_URL` (API base URL) to your One.Cloud endpoints. Create and activate credentials in One.Cloud **Project > Access Management > API Credentials**, not the account's OAuth2 Clients page. Each **Calculate KPIs** retrieves all pages of current open findings (`state=open`, `preview=false`) and displays **Security findings, platform** with its capture time in UTC. This is a current snapshot, even for a past sprint. The existing publisher and charts include the column; older rows stay empty. Failed or incomplete queries show N/A, never zero or a partial count. Requests are restricted to the configured OAuth token endpoint and GET project findings, with redirects disabled; no Vanguard resources are changed. See the Customer API and OpenAPI schema. Leave any of the three settings empty to disable.
+   * **Release Plan:** Set `RELEASE_PLAN_PARENT_PAGE` (required, numeric Confluence page ID whose direct children are the Release Plan pages), `RELEASE_PLAN_TITLE_TEMPLATE` (default `Release Plan {version}`) and `RELEASE_FIXVERSION_LABEL` (the app searches for `fixVersion = "<label> <version>"`, default `DIGITAL:HUB`).
+   * **Remote access & API:** Set `REMOTE_ACCESS_PASSWORD` to allow collaborators through the tunnel (empty = remote access blocked). Set `API_KEY` to a long random secret for the local FastAPI service, and `LOCAL_API_URL` if it does not run on `http://localhost:8000`.
    > [!NOTE]
    > The `.env` file is secure and ignored by Git so that your passwords and personal tokens are never saved publicly.
 
@@ -101,20 +103,49 @@ If you are a developer and prefer to configure the virtual environment and run t
    python3 -m venv .venv
    source .venv/bin/activate
    ```
-3. **Install Dependencies**:
+3. **Install Dependencies** (versions are pinned in `requirements.txt`):
    ```bash
    pip install --upgrade pip
    pip install -r requirements.txt
-   pip install pypdf # For AI PDF extraction
    ```
-4. **Launch the FastAPI Server** (Required for the AI Agent):
+4. **Launch the FastAPI Server** (Required for the AI Agent; listens on localhost only):
    ```bash
-   uvicorn api:app --host 0.0.0.0 --port 8000 &
+   uvicorn api:app --host 127.0.0.1 --port 8000 &
    ```
 5. **Launch Streamlit**:
    ```bash
    streamlit run app.py
    ```
+
+---
+
+## 🧪 Development & Testing
+
+Install the development tooling (includes the runtime dependencies) and run the same checks as CI (`.github/workflows/ci.yml`):
+
+```bash
+pip install -r requirements-dev.txt
+
+ruff check . --select E9,F63,F7,F821          # real errors only: syntax, undefined names
+pip-audit -r requirements.txt                 # known CVEs in pinned dependencies
+pytest --cov=utils --cov-branch --cov-report=term-missing
+```
+
+* Tests live in `tests/` and never touch real Jira, Confluence, Sonar, SBOM or Vanguard services: HTTP calls are mocked.
+* `pytest.ini` turns pandas 4 deprecation warnings (`Pandas4Warning`) into errors, so incompatible pandas usage fails early. Prefer `utils.df_helpers.blank_if_missing(series)` over `series.fillna("")`, and avoid `inplace=True`.
+* **Upgrading dependencies:** bump a version in `requirements.txt`, run the checks above, then commit.
+
+### 📂 Project Structure
+
+| Path | Contents |
+|------|----------|
+| `app.py` | Streamlit entry point: Home Hub, navigation, settings, remote-access gate and collaboration tunnel. |
+| `api.py` | Local FastAPI service used by the AI Agent (`X-API-Key` protected). |
+| `tools/` | One Streamlit page per tool (`1_Quarterly_Planner.py` … `7_Release_Plan.py`); `tools/release_plan/` holds the Release Plan sub-pages. |
+| `utils/` | Business logic shared by the pages (Jira, Confluence, KPIs, PDF/PPTX export, release checks, persistence). Keep new logic here, free of Streamlit calls, so it can be unit-tested. |
+| `tests/` | Unit tests and fixtures. |
+| `data/` | Local workbook state saved by the app (CSV/JSON). |
+| `assets/` | Logos, cover images, PowerPoint templates and the app icon. |
 
 ---
 

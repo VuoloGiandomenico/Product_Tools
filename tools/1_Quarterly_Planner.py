@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from utils.df_helpers import blank_if_missing
 import plotly.express as px
 import re
 import os
@@ -417,8 +418,8 @@ def sync_main_editor_changes():
     # Process Deleted Rows
     deleted_indices = edits.get("deleted_rows", [])
     if deleted_indices:
-        df.drop(index=deleted_indices, inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.drop(index=deleted_indices)
+        df = df.reset_index(drop=True)
 
     # Process Added Rows
     added_rows = edits.get("added_rows", [])
@@ -476,7 +477,7 @@ def load_and_normalize_data(file_or_path):
     
     # Drop rows that are completely empty
     if not df_raw.empty:
-        df_raw.dropna(how='all', inplace=True)
+        df_raw = df_raw.dropna(how='all')
         
     # Normalize common column headers from Jira CSV exports
     rename_mapping = {}
@@ -504,7 +505,7 @@ def load_and_normalize_data(file_or_path):
             rename_mapping[col] = 'Labels'
             
     if rename_mapping:
-        df_raw.rename(columns=rename_mapping, inplace=True)
+        df_raw = df_raw.rename(columns=rename_mapping)
         
     # Ensure minimum columns and clean missing values (NaN) to prevent crashes
     expected_cols = {
@@ -534,7 +535,7 @@ def load_and_normalize_data(file_or_path):
                 df_raw[col] = df_raw[col].fillna(default_val)
                 
     if 'Cluster Name' in df_raw.columns:
-        df_raw['Cluster Name'] = df_raw['Cluster Name'].fillna("")
+        df_raw['Cluster Name'] = blank_if_missing(df_raw['Cluster Name'])
         
     # Fill missing dates automatically
     if 'Start Date' not in df_raw.columns:
@@ -694,9 +695,9 @@ if st.session_state.active_tab_qp == "🔌 Ingestion":
                     previous = st.session_state.get("quarterly_progress_df")
                     previous_updates = {}
                     if isinstance(previous, pd.DataFrame) and not previous.empty and "Presentation update" in previous.columns:
-                        previous_updates = previous.set_index("Key")["Presentation update"].fillna("").to_dict()
+                        previous_updates = blank_if_missing(previous.set_index("Key")["Presentation update"]).to_dict()
                     progress_df = result["df"].drop(columns=["Select"], errors="ignore")
-                    progress_df["Presentation update"] = progress_df["Key"].map(previous_updates).fillna("")
+                    progress_df["Presentation update"] = blank_if_missing(progress_df["Key"].map(previous_updates))
                     st.session_state.quarterly_progress_df = prepare_quarterly_progress_for_presentation(progress_df)
                     st.session_state.quarterly_progress_config = {
                         "title": progress_title.strip() or "Quarterly Epic Progress",
@@ -1066,7 +1067,7 @@ def show_timeline_gantt_tab():
             """, unsafe_allow_html=True)
             
             view_mode = st.radio(
-                "Selecciona el modo de visualización",
+                "Select the view mode",
                 options=["Clusters", "Items", "All"],
                 index=2, # Default to "All"
                 horizontal=True,
@@ -1074,8 +1075,8 @@ def show_timeline_gantt_tab():
             )
     
             # Detect active year and determine shared X-axis range
-            años_detectados = gantt_df['Start Date'].dt.year.dropna().unique()
-            año_activo = int(años_detectados[0]) if len(años_detectados) > 0 else pd.Timestamp.today().year
+            detected_years = gantt_df['Start Date'].dt.year.dropna().unique()
+            active_year = int(detected_years[0]) if len(detected_years) > 0 else pd.Timestamp.today().year
     
             shared_xaxis_range = None
             if quarters_sel:
@@ -1088,7 +1089,7 @@ def show_timeline_gantt_tab():
                 if start_dates and end_dates:
                     shared_xaxis_range = [min(start_dates), max(end_dates)]
             else:
-                shared_xaxis_range = [f"{año_activo}-01-01", f"{año_activo}-12-31"]
+                shared_xaxis_range = [f"{active_year}-01-01", f"{active_year}-12-31"]
     
             plotting_rows = []
             y_axis_order = []
@@ -1187,7 +1188,7 @@ def show_timeline_gantt_tab():
                 )
                 
                 # Configure Y-axis: hide native ticks and use left-aligned annotations
-                # Altura ampliada por tener dos filas por item
+                # Taller chart: two rows per item
                 dynamic_height = max(280, 100 + len(plot_df) * 55)
                 fig.update_yaxes(
                     autorange="reversed", 
@@ -1207,7 +1208,7 @@ def show_timeline_gantt_tab():
                
                 if not quarters_sel:
                     for q_month, q_name in [(4, "Q2"), (7, "Q3"), (10, "Q4")]:
-                        q_date = pd.Timestamp(year=año_activo, month=q_month, day=1)
+                        q_date = pd.Timestamp(year=active_year, month=q_month, day=1)
                         fig.add_vline(x=q_date, line_width=1.5, line_dash="dot", line_color="#475569")
                         fig.add_annotation(x=q_date, y=1.01, yref="paper", text=f"<b>{q_name}</b>", showarrow=False, font=dict(color="#94A3B8", size=10), xanchor="left")
     

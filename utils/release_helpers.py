@@ -628,7 +628,7 @@ def build_prepared_release_notes_pdf(prepared, config):
     count_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#BFBFBF")), ("GRID", (0, 0), (-1, -1), .4, colors.HexColor("#777777")), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
     story += [count_table, Spacer(1, 12), Paragraph("List of all resolved issues (Jira ticket number) for this release:", body)]
     resolved["_epic"] = resolved["Epic"].fillna("-").astype(str)
-    resolved.sort_values(["_epic", "Key"], inplace=True)
+    resolved = resolved.sort_values(["_epic", "Key"])
     issue_rows = [[Paragraph("Issue Type", header), Paragraph("Key", header), Paragraph("Summary", header)]]
     epic_group_rows = []
     last_epic = None

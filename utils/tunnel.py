@@ -81,7 +81,7 @@ def start_tunnel(port=8501):
         return _tunnel_url
 
     if not _local_service_is_reachable(port):
-        _tunnel_error = f"La aplicación local no está escuchando en http://localhost:{port}. Inicia la app antes de crear el túnel."
+        _tunnel_error = f"The local app is not listening on http://localhost:{port}. Start the app before creating the tunnel."
         return None
 
     def run():
@@ -98,10 +98,10 @@ def start_tunnel(port=8501):
             error_str = str(e).lower()
             if "certificate_verify_failed" in error_str:
                 if not cloudflared_binary:
-                    _tunnel_error = "Red corporativa (Ej: Zscaler) detectada. Python no puede funcionar por la intercepción SSL. Por favor, instala cloudflared manualmente (ej: 'brew install cloudflared') o apaga la VPN."
+                    _tunnel_error = "Corporate network (e.g. Zscaler) detected: SSL interception prevents Python from downloading cloudflared. Install cloudflared manually (e.g. 'brew install cloudflared') or turn off the VPN."
                     return
             elif "no such host" in error_str or "timeout" in error_str:
-                _tunnel_error = "Error de red: No se pudo conectar a internet o DNS bloqueado. Verifica tu conexión o apaga la VPN."
+                _tunnel_error = "Network error: could not reach the internet or DNS is blocked. Check your connection or turn off the VPN."
                 return
 
         # Prefer the locally installed Cloudflare binary.  pycloudflared downloads
@@ -132,18 +132,18 @@ def start_tunnel(port=8501):
                 elif "failed to unmarshal" in line:
                     _tunnel_error = "Rate limit reached. Try again in a few minutes or connect via VPN."
                 elif "x509: certificate signed by unknown authority" in line or "handshake failure" in line or "certificate verify failed" in lower_line:
-                    _tunnel_error = "Intercepción SSL detectada: una VPN o un proxy corporativo está alterando el certificado TLS. Desactiva la VPN o cambia de red."
+                    _tunnel_error = "SSL interception detected: a VPN or corporate proxy is altering the TLS certificate. Turn off the VPN or switch networks."
                 elif "failed to connect to the local service" in lower_line or "connection refused" in lower_line:
-                    _tunnel_error = f"La aplicación local no está escuchando en http://localhost:{port}. Verifica que Streamlit esté arrancado y que el puerto sea correcto."
+                    _tunnel_error = f"The local app is not listening on http://localhost:{port}. Make sure Streamlit is running and the port is correct."
                 elif "no such host" in lower_line or "i/o timeout" in lower_line or "dial udp" in lower_line or "lookup" in lower_line:
-                    _tunnel_error = "Cloudflare no pudo resolver o conectar con el servicio. Comprueba tu conexión a internet y vuelve a intentarlo."
+                    _tunnel_error = "Cloudflare could not resolve or reach the service. Check your internet connection and try again."
 
                 match = url_pattern.search(line)
                 if match:
                     _tunnel_url = match.group(0)
                     _tunnel_error = None
                     if not _local_http_is_reachable(port):
-                        _tunnel_error = f"El túnel se creó, pero la app local en http://localhost:{port} no responde. Inicia Streamlit y comprueba que el puerto esté abierto."
+                        _tunnel_error = f"The tunnel was created, but the local app on http://localhost:{port} is not responding. Start Streamlit and check that the port is open."
                         _tunnel_url = None
                         print(f"[TUNNEL] Generated URL found, but localhost:{port} is not responding.")
                     else:
